@@ -1,0 +1,8 @@
+# Ignore built and generated files
+lib/**
+dataconnect-generated/**
+node_modules/
+dist/
+build/
+coverage/
+**/*.d.ts

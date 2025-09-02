@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base href="/" />
+
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="description" content="Airport Authority Linkage App" />
+
+    <!-- ✅ Google Sign-In Client ID -->
+    <meta name="google-signin-client_id"
+      content="707290062868-261abob2oqv1hgaa14ovjrho3gr8anj2.apps.googleusercontent.com" />
+
+    <!-- ✅ Mobile PWA Settings -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="airport_authority_linkage_app" />
+    <link rel="apple-touch-icon" href="icons/Icon-192.png" />
+
+    <!-- ✅ Favicon & Manifest -->
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="manifest" href="manifest.json" />
+
+    <title>Airport Authority Linkage App</title>
+
+    <!-- ✅ Google Platform.js (for Google Sign-In Web) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+    <!-- ✅ Flutter app startup -->
+    <script src="flutter_bootstrap.js" async defer></script>
+  </head>
+
+  <body>
+    <!-- ✅ reCAPTCHA container (for phone auth) -->
+    <div id="recaptcha-container"></div>
+
+    <!-- ✅ Google One Tap container (optional) -->
+    <div id="g_id_onload"
+      data-client_id="707290062868-261abob2oqv1hgaa14ovjrho3gr8anj2.apps.googleusercontent.com"
+      data-auto_prompt="false">
+    </div>
+
+    <nav style="background-color: #1976D2; color: white; padding: 16px;">
+      <a href="/upload" style="margin-right: 16px; color: white; text-decoration: none;">Upload</a>
+      <a href="/search" style="margin-right: 16px; color: white; text-decoration: none;">Search</a>
+      <a href="/stats" style="margin-right: 16px; color: white; text-decoration: none;">Stats</a>
+      <a href="/analyze" style="margin-right: 16px; color: white; text-decoration: none;">Analyze</a>
+    </nav>
+
+    <div id="content" style="padding: 16px;">
+      <!-- Pages will be injected here -->
+    </div>
+  </body>
+</html>

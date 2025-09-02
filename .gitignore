@@ -1,0 +1,7 @@
+.dart_tool/ 
+build/ 
+.idea/ 
+node_modules/ 
+venv/ 
+*.log 
+*.json 
