@@ -4,6 +4,9 @@
 	bare = true
 	symlinks = false
 	ignorecase = true
+<<<<<<< HEAD
 [remote "origin"]
 	url = https://github.com/trghcj/airport-auhtority-linkage-app-new.git
 	fetch = +refs/heads/*:refs/remotes/origin/*
+=======
+>>>>>>> 975889cc6847a6a10adcac2fc2726c8a17edafad

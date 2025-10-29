@@ -1,0 +1,12 @@
+specVersion: "v1"
+serviceId: "airport_auhtority_linkage_app"
+location: "asia-south1"
+schema:
+  source: "./schema"
+  datasource:
+    postgresql:
+      database: "postgres"
+      cloudSql:
+        instanceId: "airport-web-fdc"
+      # schemaValidation: "COMPATIBLE"
+connectorDirs: ["./connector"]

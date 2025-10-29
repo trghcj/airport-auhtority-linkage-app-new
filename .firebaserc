@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "default": "airport-authority-linkage",
+    "dev": "airport-auhtority-linkage-app"
+  },
+  "targets": {},
+  "etags": {}
+}
