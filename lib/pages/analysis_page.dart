@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io' show File, Platform;
 import 'package:airport_auhtority_linkage_app/services/analysis_service.dart';
 import 'package:airport_auhtority_linkage_app/config/config.dart';
+import 'package:airport_auhtority_linkage_app/models/analysis_data.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -9,11 +10,10 @@ import 'package:logger/logger.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:airport_auhtority_linkage_app/models/analysis_data.dart' as model;
-import 'package:universal_html/html.dart' as html; // Import universal_html for web support
+import 'package:universal_html/html.dart' as html;
 
 class AnalysisPage extends StatefulWidget {
-  final Map<String, model.AnalysisData>? initialAnalysisResult; // Receive pre-analyzed data
+  final Map<String, AnalysisData>? initialAnalysisResult; // Receive pre-analyzed data
 
   const AnalysisPage({super.key, this.initialAnalysisResult});
 
@@ -26,7 +26,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
   final AnalysisService _analysisService = AnalysisService();
   bool _isLoading = false;
   String? _status;
-  Map<String, model.AnalysisData>? _analysisResult;
+  Map<String, AnalysisData>? _analysisResult;
   String? _selectedSheet;
   String? _docId; // Store docId from initialAnalysisResult
 
@@ -39,11 +39,15 @@ class _AnalysisPageState extends State<AnalysisPage> {
   void _initializeData() {
     if (widget.initialAnalysisResult != null && widget.initialAnalysisResult!.isNotEmpty) {
       setState(() {
-        _analysisResult = widget.initialAnalysisResult;
-        _selectedSheet = _analysisResult!.keys.firstWhere((k) => _analysisResult![k] != null, orElse: () => _analysisResult!.keys.first);
-        // ignore: unnecessary_null_comparison
-        _docId = _analysisResult!.values.firstWhere((v) => v.docId != null, orElse: () => model.AnalysisData.empty()).docId;
-        _status = _docId != null
+        _analysisResult = Map.from(widget.initialAnalysisResult!); // Create a copy to avoid mutation
+        _selectedSheet = _analysisResult!.keys.firstWhere(
+          (k) => _analysisResult![k] != null,
+          orElse: () => _analysisResult!.keys.first,
+        );
+        _docId = _analysisResult!.values
+            .firstWhere((v) => v.docId.isNotEmpty, orElse: () => AnalysisData.empty())
+            .docId;
+        _status = _docId!.isNotEmpty
             ? '✅ Analysis data received with Doc ID: $_docId'
             : '✅ Analysis data received from previous upload (no Doc ID).';
         _logger.d(
@@ -99,12 +103,20 @@ class _AnalysisPageState extends State<AnalysisPage> {
       final analysisResponse = await _analysisService.analyzeData(file);
       if (!mounted) return;
 
+      final analysisResult = (analysisResponse['analysisResult'] as Map<String, dynamic>).cast<String, AnalysisData>();
+      if (analysisResult.isEmpty) {
+        throw Exception('No analysis data returned from server');
+      }
+
       setState(() {
         _isLoading = false;
-        _analysisResult = (analysisResponse['analysisResult'] as Map<String, dynamic>).cast<String, model.AnalysisData>();
-        _selectedSheet = _analysisResult!.keys.firstWhere((k) => _analysisResult![k] != null, orElse: () => _analysisResult!.keys.first);
-        _docId = analysisResponse['docId'] as String?;
-        _status = _docId != null
+        _analysisResult = analysisResult;
+        _selectedSheet = _analysisResult!.keys.firstWhere(
+          (k) => _analysisResult![k] != null,
+          orElse: () => _analysisResult!.keys.first,
+        );
+        _docId = analysisResponse['docId'] as String? ?? '';
+        _status = _docId!.isNotEmpty
             ? '✅ Analysis complete for ${_analysisResult!.keys.length} sheet(s) with Doc ID: $_docId'
             : '✅ Analysis complete for ${_analysisResult!.keys.length} sheet(s) (no Doc ID).';
         _logger.d(
@@ -194,6 +206,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
         SnackBar(
           content: Text(message),
           duration: const Duration(seconds: 3),
+          backgroundColor: _status != null && _status!.startsWith('❌') ? Colors.red[100] : null,
         ),
       );
     }
@@ -215,6 +228,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
       if (doubleHours < 14) return Colors.yellow;
       return Colors.green;
     } catch (e) {
+      _logger.w('Error parsing airtime: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
       return Colors.grey;
     }
   }
@@ -355,7 +369,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text(
-                              '${entry.key}:',
+                              '${entry.key.replaceAll('_', ' ').titleCase}:',
                               style: const TextStyle(
                                 fontFamily: 'Roboto',
                                 fontSize: 14,
@@ -401,7 +415,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
                     headingRowHeight: 56.0,
                     columns: columns.map((col) => DataColumn(
                           label: Text(
-                            col,
+                            col.replaceAll('_', ' ').titleCase,
                             style: const TextStyle(
                               fontFamily: 'Roboto',
                               fontSize: 14,
@@ -440,16 +454,16 @@ class _AnalysisPageState extends State<AnalysisPage> {
           ),
           const SizedBox(height: 16),
           ElevatedButton(
-            onPressed: _isLoading || _selectedSheet == null || _docId == null
+            onPressed: _isLoading || _selectedSheet == null || _docId!.isEmpty
                 ? null
                 : () => _downloadPDF(_selectedSheet!),
-            child: const Text('Download PDF'),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
               textStyle: const TextStyle(fontSize: 16, fontFamily: 'Roboto'),
               minimumSize: const Size(double.infinity, 50),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
+            child: const Text('Download PDF'),
           ),
         ],
       ),
@@ -473,7 +487,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
         elevation: 4,
         shadowColor: Colors.grey.withOpacity(0.3),
         actions: [
-          if (_docId != null && !_isLoading)
+          if (_docId != null && _docId!.isNotEmpty && !_isLoading)
             IconButton(
               icon: const Icon(Icons.picture_as_pdf, color: Colors.red),
               onPressed: _selectedSheet == null ? null : () => _downloadPDF(_selectedSheet!),
@@ -587,4 +601,11 @@ class _AnalysisPageState extends State<AnalysisPage> {
             ),
     );
   }
+}
+
+extension StringExtension on String {
+  String get titleCase => this
+      .split(' ')
+      .map((word) => word.isNotEmpty ? '${word[0].toUpperCase()}${word.substring(1).toLowerCase()}' : word)
+      .join(' ');
 }

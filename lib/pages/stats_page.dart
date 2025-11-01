@@ -1,8 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:airport_auhtority_linkage_app/config/config.dart';
 import 'package:airport_auhtority_linkage_app/services/analysis_service.dart';
 import 'package:logger/logger.dart';
+import 'package:intl/intl.dart';
+
+extension StringCapitalization on String {
+  String capitalize() {
+    return isEmpty ? this : this[0].toUpperCase() + substring(1);
+  }
+}
 
 class StatsPage extends StatefulWidget {
   final String? docId;
@@ -56,10 +64,19 @@ class _StatsPageState extends State<StatsPage> {
 
       setState(() {
         _stats = statsData.map((stat) {
-          // Use values directly from AnalysisService
+          // Debug logging to check raw data
+          _logger.d('Raw stat data: $stat');
+
+          // Determine group key dynamically
+          final groupKey = _groupBy == 'operator' ? 'Group_Name' : 'Region';
+          String groupValue = stat[groupKey] ?? stat['operator'] ?? stat['region'] ?? 'N/A';
+          if (groupValue == 'N/A') {
+            _logger.w('Missing $groupKey, falling back to alternative keys or N/A for stat: ${jsonEncode(stat)}');
+          }
+
+          // Parse financial values
           final landingCharges = double.tryParse((stat['Total_Landing_Charges']?.toString() ?? '0.0').replaceAll('₹', '').replaceAll(',', '')) ?? 0.0;
           final udfCharges = double.tryParse((stat['Total_UDF_Charges']?.toString() ?? '0.0').replaceAll('₹', '').replaceAll(',', '')) ?? 0.0;
-          final avgAirtime = stat['Avg_Airtime_Hours'] ?? 'N/A';
 
           // Determine bill statuses based on counts
           final arrBilledCount = (stat['Arr_Billed_Count'] ?? 0) as int;
@@ -69,29 +86,31 @@ class _StatsPageState extends State<StatsPage> {
           final depBillStatus = depBilledCount > 0 ? 'Yes' : 'No';
           final udfBillStatus = udfBilledCount > 0 ? 'Yes' : 'No';
 
-          // Apply airtime color (recalculate if not provided by service)
+          // Calculate airtime color dynamically
           Color airtimeColor = Colors.grey;
+          final avgAirtime = stat['Avg_Airtime_Hours'] ?? 'N/A';
           if (avgAirtime != 'N/A') {
             try {
-              final hours = double.parse(avgAirtime.split(' ').first);
+              final hours = double.parse(avgAirtime.toString().split(' ').first);
               airtimeColor = hours < 10 ? Colors.red : (hours < 14 ? Colors.yellow : Colors.green);
             } catch (e) {
-              _logger.w('Error parsing avg airtime for stat: $e');
+              _logger.w('Error parsing avg airtime for stat: $e, using grey');
             }
           }
 
           return {
             ...stat,
+            groupKey: groupValue, // Ensure the correct group key is set
             'Total_Landing_Charges': '₹${landingCharges.toStringAsFixed(2)}',
             'Total_UDF_Charges': '₹${udfCharges.toStringAsFixed(2)}',
             'ArrBillStatus': arrBillStatus,
             'DepBillStatus': depBillStatus,
             'UDFBillStatus': udfBillStatus,
-            'Airtime_Color': airtimeColor.value.toRadixString(16), // Store as hex for UI
+            'Airtime_Color': airtimeColor.value.toRadixString(16), // Store color as hex
           };
         }).toList();
         _isLoading = false;
-        _lastRefresh = DateTime.now();
+        _lastRefresh = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)); // 01:53 AM IST
       });
       _logger.d('Fetched ${_stats.length} stats records at ${DateTime.now().toIso8601String()}');
       _showSnackBar('Stats refreshed successfully.');
@@ -173,7 +192,7 @@ class _StatsPageState extends State<StatsPage> {
             Padding(
               padding: const EdgeInsets.only(right: 16.0),
               child: Text(
-                'Last: ${_lastRefresh!.toLocal().toString().split('.')[0]} IST',
+                'Last: ${_lastRefresh!.toString().split('.').first} IST',
                 style: const TextStyle(
                   fontFamily: 'Roboto',
                   fontSize: 14,
@@ -253,7 +272,7 @@ class _StatsPageState extends State<StatsPage> {
                     itemCount: _stats.length,
                     itemBuilder: (context, index) {
                       final item = _stats[index];
-                      final groupKey = _groupBy == 'operator' ? 'Operator_Name' : 'Region';
+                      final groupKey = _groupBy == 'operator' ? 'Group_Name' : 'Region';
                       return Card(
                         elevation: 2,
                         margin: const EdgeInsets.symmetric(vertical: 8.0),
@@ -271,12 +290,16 @@ class _StatsPageState extends State<StatsPage> {
                           subtitle: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              _buildStatRow('Customer', item['Customer_Name'] ?? 'N/A'),
+                              _buildStatRow('Operator', item['Group_Name'] ?? 'Unknown'),
                               _buildStatRow('Flights', item['Flight_Count']?.toString() ?? '0'),
                               _buildStatRow('Avg Airtime', item['Avg_Airtime_Hours'] ?? 'N/A',
-                                  color: Color(int.parse(item['Airtime_Color'] ?? '0xff808080', radix: 16))),
-                              _buildStatRow('Total Airtime', item['Total_Airtime_Hours'] ?? 'N/A',
-                                  color: Color(int.parse(item['Airtime_Color'] ?? '0xff808080', radix: 16))),
+                                  color: item['Airtime_Color'] != null
+                                      ? Color(int.tryParse('0xff${item['Airtime_Color']}', radix: 16) ?? 0xff808080)
+                                      : Colors.grey),
+                              _buildStatRow('Total Airtime', item['Total_Hours'] ?? 'N/A',
+                                  color: item['Airtime_Color'] != null
+                                      ? Color(int.tryParse('0xff${item['Airtime_Color']}', radix: 16) ?? 0xff808080)
+                                      : Colors.grey),
                               _buildStatRow('Same Linkage', item['Same_Linkage_Count']?.toString() ?? '0'),
                               _buildStatRow('Different Linkage', item['Different_Linkage_Count']?.toString() ?? '0'),
                               _buildStatRow('Arr Billed', item['Arr_Billed_Count']?.toString() ?? '0'),
@@ -305,11 +328,5 @@ class _StatsPageState extends State<StatsPage> {
         ),
       ),
     );
-  }
-}
-
-extension StringExtension on String {
-  String capitalize() {
-    return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
   }
 }

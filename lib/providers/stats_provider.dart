@@ -75,7 +75,7 @@ class StatsProvider with ChangeNotifier {
           if (!_statsData.containsKey(groupKey)) {
             _statsData[groupKey] = {
               'Group': groupKey,
-              'Customer_Name': row['Customer_Name']?.toString() ?? 'N/A',
+              'Operator_Name': row['Operator_Name']?.toString() ?? 'Unknown', // Updated from Customer_Name
               'Flight_Count': 0,
               'Avg_Airtime_Hours': 0.0,
               'Same_Linkage_Count': 0,
@@ -121,7 +121,7 @@ class StatsProvider with ChangeNotifier {
       });
 
       _status = '✅ Statistics loaded for ${_statsData.length} groups.';
-      logger.d('Stats loaded for ${_statsData.length} groups at ${DateTime(2025, 8, 3, 2, 49, 0).toIso8601String()}');
+      logger.d('Stats loaded for ${_statsData.length} groups at ${DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)).toIso8601String()}'); // Updated to current time
     } catch (e) {
       _status = e.toString().contains('Upload failed')
           ? '❌ Upload failed: ${e.toString().replaceAll('Exception: Upload failed: ', '')}'
@@ -132,7 +132,7 @@ class StatsProvider with ChangeNotifier {
                   : e.toString().contains('timed out')
                       ? '❌ ${e.toString()}'
                       : '❌ Unexpected error: ${e.toString()}';
-      logger.e('Error fetching stats: $e at ${DateTime(2025, 8, 3, 2, 49, 0).toIso8601String()}');
+      logger.e('Error fetching stats: $e at ${DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)).toIso8601String()}'); // Updated to current time
     } finally {
       _isLoading = false;
       notifyListeners();

@@ -8,10 +8,11 @@ import 'package:logger/logger.dart';
 import 'package:airport_auhtority_linkage_app/models/analysis_data.dart' as model;
 import 'package:intl/intl.dart'; // For IST formatting
 import 'dart:async'; // For retry logic
+import 'dart:typed_data'; // For Uint8List
 
 class AnalysisService {
   final Logger logger = Logger();
-  static final DateTime _currentDate = DateTime(2025, 8, 24, 4, 35, 0, 0, 19800); // 04:35 AM IST, August 24, 2025
+  static final DateTime _currentDate = DateTime(2025, 10, 26, 22, 13, 0, 0, 19800); // 10:13 PM IST, October 26, 2025
 
   // Date parsing aligned with Flask backend's parse_excel_serial_date
   DateTime? _parseExcelSerialDate(dynamic serialNum, String? hhmmStr, String fieldName) {
@@ -67,52 +68,56 @@ class AnalysisService {
       throw Exception('Please select at least one departure file.');
     }
 
-    final departureFile = files[0];
-    if (files.length > 1) {
-      logger.w('Only the first file will be uploaded as departure_file; additional files ignored at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}.');
+    // Validate all files
+    List<String> fileNames = [];
+    for (final file in files) {
+      if (file.size > 50 * 1024 * 1024) {
+        logger.e('File size exceeds 50MB limit for ${file.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+        throw Exception('File ${file.name} size exceeds 50MB limit.');
+      }
+      if (file.bytes == null && file.path == null) {
+        logger.e('Invalid file format or data for ${file.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+        throw Exception('Invalid file format or data for ${file.name}.');
+      }
+      fileNames.add(file.name);
     }
 
-    if (departureFile.size > 50 * 1024 * 1024) {
-      logger.e('File size exceeds 50MB limit for ${departureFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('Departure file size exceeds 50MB limit.');
-    }
-
-    logger.d('Uploading file: ${departureFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+    logger.d('Uploading ${files.length} file(s): ${fileNames.join(', ')} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
 
     final uri = Uri.parse('${AppConfig.baseURL}/upload');
     return await _retryRequest(() async {
       final request = http.MultipartRequest('POST', uri);
 
-      if (departureFile.bytes != null) {
-        request.files.add(http.MultipartFile.fromBytes(
-          'departure_file',
-          departureFile.bytes!,
-          filename: departureFile.name,
-        ));
-      } else if (departureFile.path != null) {
-        request.files.add(await http.MultipartFile.fromPath(
-          'departure_file',
-          departureFile.path!,
-          filename: departureFile.name,
-        ));
-      } else {
-        logger.e('Invalid departure file format or data for ${departureFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Invalid departure file format or data.');
+      for (final file in files) {
+        if (file.bytes != null) {
+          request.files.add(http.MultipartFile.fromBytes(
+            'departure_files[]',
+            file.bytes!,
+            filename: file.name,
+          ));
+        } else if (file.path != null) {
+          request.files.add(await http.MultipartFile.fromPath(
+            'departure_files[]',
+            file.path!,
+            filename: file.name,
+          ));
+        }
       }
 
-      final response = await request.send().timeout(const Duration(seconds: 60));
+      // Increase timeout for potentially multiple/large files
+      final response = await request.send().timeout(const Duration(seconds: 120));
       final responseBody = await response.stream.bytesToString();
       final responseData = jsonDecode(responseBody) as Map<String, dynamic>? ?? {};
 
       if (response.statusCode != 200 || !(responseData['success'] as bool? ?? false)) {
         logger.e('Upload failed: ${responseData['error'] ?? 'Unknown error'}, Status: ${response.statusCode}, Response: $responseBody at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Upload failed: ${responseData['error'] ?? 'Unknown error (Check Operator_Name in row 1)'}');
+        throw Exception('Upload failed: ${responseData['error'] ?? 'Unknown error'}');
       }
 
       final docId = responseData['doc_id'] as String?;
       final sheets = responseData['sheets'] as Map<String, dynamic>? ?? {};
       if (docId == null) {
-        logger.e('No doc_id returned from server for ${departureFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+        logger.e('No doc_id returned from server for batch upload at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
         throw Exception('No doc_id returned from server');
       }
 
@@ -189,8 +194,8 @@ class AnalysisService {
           row['Dep_Bill_Status'] = (row['Dep_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No';
           row['UDF_Bill_Status'] = (row['UDF_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No';
 
-          row['Landing'] = '₹${(double.tryParse(row['Landing']?.toString() ?? '0.0') ?? 0.0).toStringAsFixed(2)}';
-          row['UDF_Charge'] = '₹${(double.tryParse(row['UDF_Charge']?.toString() ?? '0.0') ?? 0.0).toStringAsFixed(2)}';
+          row['Landing'] = '₹${(double.tryParse(row['Landing']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}';
+          row['UDF_Charge'] = '₹${(double.tryParse(row['UDF_Charge']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}';
         }
       }
 
@@ -219,7 +224,7 @@ class AnalysisService {
         logger.e('PDF download failed: Status ${response.statusCode}, Body: ${response.body} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
         final errorDetails = jsonDecode(response.body) as Map<String, dynamic>? ?? {};
         if (response.statusCode == 500 && errorDetails['details']?.contains('pdflatex') == true) {
-          const logPath = 'C:\\Users\\suremdra singh\\AppData\\Local\\MiKTeX\\miktex\\log\\pdflatex.log';
+          const logPath = '/var/log/miktex/pdflatex.log'; // Updated to a more generic server log path
           logger.e('PDF generation failed: Server-side LaTeX error. Check log at $logPath on the server or contact support.');
           throw Exception('PDF generation failed: Server-side LaTeX error. Check log at $logPath or contact support.');
         }
@@ -309,8 +314,8 @@ class AnalysisService {
           'Dep_UnBilled_Count': int.tryParse(item['Dep_UnBilled_Count']?.toString() ?? '0') ?? 0,
           'UDF_Billed_Count': int.tryParse(item['UDF_Billed_Count']?.toString() ?? '0') ?? 0,
           'UDF_UnBilled_Count': int.tryParse(item['UDF_UnBilled_Count']?.toString() ?? '0') ?? 0,
-          'Total_Landing_Charges': '₹${(double.tryParse(item['Total_Landing_Charges']?.toString() ?? '0.0') ?? 0.0).toStringAsFixed(2)}',
-          'Total_UDF_Charges': '₹${(double.tryParse(item['Total_UDF_Charges']?.toString() ?? '0.0') ?? 0.0).toStringAsFixed(2)}',
+          'Total_Landing_Charges': '₹${(double.tryParse(item['Total_Landing_Charges']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}',
+          'Total_UDF_Charges': '₹${(double.tryParse(item['Total_UDF_Charges']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}',
           'Region': item['Region'] ?? 'N/A',
         };
       }).toList();
@@ -346,13 +351,10 @@ class AnalysisService {
 
       final responseData = jsonDecode(response.body) as List<dynamic>? ?? [];
       final results = responseData.map((item) {
-        final regNo = item['Reg_No'] as String? ?? 'N/A';
-        final arrDate = item['Arr_Date'] as String? ?? 'N/A';
-        final count = item['Count']?.toString() ?? '1';
         return {
-          'Reg No': regNo,
-          'Date': arrDate,
-          'Count': count,
+          'Reg No': item['Reg_No'] as String? ?? 'N/A',
+          'Date': item['Arr_Date'] as String? ?? 'N/A',
+          'Count': item['Count']?.toString() ?? '1',
           'Unique Id': item['Unique_Id'] as String? ?? 'N/A',
           'Operator Name': item['Operator_Name'] as String? ?? 'N/A',
           'Aircraft Type': item['Aircraft_Type'] as String? ?? 'N/A',
@@ -361,8 +363,8 @@ class AnalysisService {
           'Arr Bill Status': item['Arr_Bill_Status'] as String? ?? 'N/A',
           'Dep Bill Status': item['Dep_Bill_Status'] as String? ?? 'N/A',
           'UDF Bill Status': item['UDF_Bill_Status'] as String? ?? 'N/A',
-          'Landing': item['Landing'] != null ? '₹${(double.tryParse(item['Landing'].toString()) ?? 0.0).toStringAsFixed(2)}' : '₹0.00',
-          'UDF Charge': item['UDF_Charge'] != null ? '₹${(double.tryParse(item['UDF_Charge'].toString()) ?? 0.0).toStringAsFixed(2)}' : '₹0.00',
+          'Landing': item['Landing'] as String? ?? '₹0.00',
+          'UDF Charge': item['UDF_Charge'] as String? ?? '₹0.00',
         };
       }).toList();
 

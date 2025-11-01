@@ -11,8 +11,8 @@ class Config {
   static const String apiBaseUrl = 'http://localhost:5003'; // Adjust as needed
 }
 
-// Static current date and time (01:17 AM IST, August 03, 2025)
-final DateTime _currentDate = DateTime(2025, 8, 3, 1, 17, 0, 0, 19800);
+// Static current date and time (04:03 AM IST, October 27, 2025)
+final DateTime _currentDate = DateTime(2025, 10, 27, 4, 3, 0, 0, 19800);
 
 class SearchPage extends StatefulWidget {
   final String filterBy;
@@ -70,6 +70,7 @@ class _SearchPageState extends State<SearchPage> {
         _error = 'No document ID available. Please upload or analyze a file first.';
         _isLoading = false;
       });
+      _showSnackBar('No document ID available. Please upload or analyze a file first.');
       return;
     }
 
@@ -89,6 +90,8 @@ class _SearchPageState extends State<SearchPage> {
         _udfBillStatus,
       ].where((s) => s?.isNotEmpty ?? false).join(' ');
 
+      _logger.d('Fetching search results with query: "$query", docId: ${widget.docId}, page: $_page, limit: $_limit at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+
       final results = await _analysisService.searchFlights(widget.docId!, {
         'query': query,
         'page': _page.toString(),
@@ -97,25 +100,40 @@ class _SearchPageState extends State<SearchPage> {
 
       if (!mounted) return;
 
+      if (results.isEmpty) {
+        _logger.w('No search results returned from backend for query: "$query" at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+        setState(() {
+          _results = [];
+          _error = 'No matching flights found.';
+          _isLoading = false;
+        });
+        return;
+      }
+
       setState(() {
+        // Process search results with enhanced logging for debugging
         _results = results.map((result) {
-          // Map only the fields provided by searchFlights, with fallbacks
+          _logger.d('Raw search result: $result at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+          final regNo = result['Reg No']?.toString() ?? 'Unknown';
+          if (regNo == 'Unknown') {
+            _logger.w('Fallback to Unknown for Reg No in result: $result');
+          }
           return {
-            'Reg No': result['Reg No'] ?? 'N/A',
-            'Date': result['Date'] ?? 'N/A',
-            'Count': result['Count'] ?? '1',
-            'Unique Id': 'N/A', // Not available from searchFlights
-            'Operator Name': 'N/A', // Not available from searchFlights
-            'Aircraft Type': 'N/A', // Not available from searchFlights
-            'Airtime Hours': 'N/A', // Not available from searchFlights
-            'Linkage Status': 'N/A', // Not available from searchFlights
-            'Arr Bill Status': 'N/A', // Not available from searchFlights
-            'Dep Bill Status': 'N/A', // Not available from searchFlights
-            'UDF Bill Status': 'N/A', // Not available from searchFlights
-            'Landing': '₹0.00', // Not available from searchFlights
-            'UDF Charge': '₹0.00', // Not available from searchFlights
+            'Reg No': regNo,
+            'Date': result['Date']?.toString() ?? 'Unknown',
+            'Unique Id': result['Unique Id']?.toString() ?? 'Unknown',
+            'Operator Name': result['Operator Name']?.toString() ?? 'Unknown Operator',
+            'Aircraft Type': result['Aircraft Type']?.toString() ?? 'Unknown',
+            'Airtime Hours': result['Airtime Hours']?.toString() ?? '0.00',
+            'Linkage Status': result['Linkage Status']?.toString() ?? 'Unknown',
+            'Arr Bill Status': result['Arr Bill Status']?.toString() ?? 'unbilled',
+            'Dep Bill Status': result['Dep Bill Status']?.toString() ?? 'unbilled',
+            'UDF Bill Status': result['UDF Bill Status']?.toString() ?? 'unbilled',
+            'Landing': result['Landing']?.toString() ?? '₹0.00',
+            'UDF Charge': result['UDF Charge']?.toString() ?? '₹0.00',
           };
         }).toList();
+
         _isLoading = false;
         _logger.d('Fetched ${_results.length} search results at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
       });
@@ -126,6 +144,7 @@ class _SearchPageState extends State<SearchPage> {
           _error = 'Error fetching results: ${e.toString().contains("Network error") ? "Check your internet connection and try again." : e.toString()}';
           _isLoading = false;
         });
+        _showSnackBar('Error fetching results: ${e.toString().contains("Network error") ? "Check your internet connection." : e.toString()}');
       }
     }
   }
@@ -145,6 +164,22 @@ class _SearchPageState extends State<SearchPage> {
   void _resetDropdown(void Function(String?) setter) {
     setter(null);
     _debounceSearch();
+  }
+
+  void _showSnackBar(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Color _getAirtimeColor(String airtimeHoursStr) {
+    final airtimeHours = double.tryParse(airtimeHoursStr) ?? 0.0;
+    return airtimeHours >= 14 ? Colors.green : airtimeHours >= 10 ? Colors.yellow : Colors.red;
   }
 
   @override
@@ -277,7 +312,7 @@ class _SearchPageState extends State<SearchPage> {
                     textAlign: TextAlign.center,
                   ),
                 ),
-              if (_results.isNotEmpty || _isLoading || _error != null)
+              if (_results.isNotEmpty)
                 Container(
                   constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
                   child: SingleChildScrollView(
@@ -287,6 +322,8 @@ class _SearchPageState extends State<SearchPage> {
                       itemCount: _results.length,
                       itemBuilder: (context, index) {
                         final item = _results[index];
+                        final double airtimeHours = double.tryParse(item['Airtime Hours']) ?? 0.0; // Handle null or invalid
+                        final airtimeColor = _getAirtimeColor(airtimeHours.toString());
                         return Card(
                           elevation: 2,
                           margin: const EdgeInsets.symmetric(vertical: 8.0),
@@ -294,7 +331,7 @@ class _SearchPageState extends State<SearchPage> {
                           child: ListTile(
                             contentPadding: const EdgeInsets.all(16.0),
                             title: Text(
-                              '${item['Reg No']} - ${item['Count']} Flights',
+                              '${item['Reg No'] ?? 'Unknown'} - ${item['Count'] ?? '1'} Flights',
                               style: const TextStyle(
                                 fontFamily: 'Roboto',
                                 fontWeight: FontWeight.bold,
@@ -304,19 +341,19 @@ class _SearchPageState extends State<SearchPage> {
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                _buildDetailRow('Reg No', item['Reg No']),
-                                _buildDetailRow('Date', item['Date']),
-                                _buildDetailRow('Count', item['Count'].toString()),
-                                _buildDetailRow('Unique ID', item['Unique Id']),
-                                _buildDetailRow('Operator Name', item['Operator Name']),
-                                _buildDetailRow('Aircraft Type', item['Aircraft Type']),
-                                _buildDetailRow('Airtime', item['Airtime Hours'], color: Colors.grey), // Static color
-                                _buildDetailRow('Linkage', item['Linkage Status']),
-                                _buildDetailRow('Arr Bill', item['Arr Bill Status']),
-                                _buildDetailRow('Dep Bill', item['Dep Bill Status']),
-                                _buildDetailRow('UDF Bill', item['UDF Bill Status']),
-                                _buildDetailRow('Landing', item['Landing']),
-                                _buildDetailRow('UDF Charge', item['UDF Charge']),
+                                _buildDetailRow('Reg No', item['Reg No'] ?? 'Unknown'),
+                                _buildDetailRow('Date', item['Date'] ?? 'Unknown'),
+                                _buildDetailRow('Count', item['Count'] ?? '1'),
+                                _buildDetailRow('Unique Id', item['Unique Id'] ?? 'Unknown'),
+                                _buildDetailRow('Operator Name', item['Operator Name'] ?? 'Unknown Operator'),
+                                _buildDetailRow('Aircraft Type', item['Aircraft Type'] ?? 'Unknown'),
+                                _buildDetailRow('Airtime', item['Airtime Hours'] ?? '0.00', color: airtimeColor),
+                                _buildDetailRow('Linkage', item['Linkage Status'] ?? 'Unknown'),
+                                _buildDetailRow('Arr Bill', item['Arr Bill Status'] ?? 'unbilled'),
+                                _buildDetailRow('Dep Bill', item['Dep Bill Status'] ?? 'unbilled'),
+                                _buildDetailRow('UDF Bill', item['UDF Bill Status'] ?? 'unbilled'),
+                                _buildDetailRow('Landing', item['Landing'] ?? '₹0.00'),
+                                _buildDetailRow('UDF Charge', item['UDF Charge'] ?? '₹0.00'),
                               ],
                             ),
                           ),
@@ -403,11 +440,10 @@ class _SearchPageState extends State<SearchPage> {
         children: [
           Text(
             '$label:',
-            style: TextStyle(
+            style: const TextStyle(
               fontFamily: 'Roboto',
               fontSize: 14,
               fontWeight: FontWeight.w500,
-              color: color ?? Colors.black,
             ),
           ),
           Text(
@@ -415,7 +451,7 @@ class _SearchPageState extends State<SearchPage> {
             style: TextStyle(
               fontFamily: 'Roboto',
               fontSize: 14,
-              color: color,
+              color: color ?? Colors.black,
             ),
           ),
         ],

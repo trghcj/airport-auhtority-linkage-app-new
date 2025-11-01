@@ -4,6 +4,7 @@ import 'package:logger/logger.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:airport_auhtority_linkage_app/models/analysis_data.dart' as model;
 import 'package:airport_auhtority_linkage_app/config/config.dart';
+import 'package:intl/intl.dart'; // For IST formatting
 
 class SearchProvider with ChangeNotifier {
   final Logger logger = Logger();
@@ -47,7 +48,7 @@ class SearchProvider with ChangeNotifier {
       final docId = uploadResponse['docId'] as String?;
 
       if (docId == null || docId.isEmpty) {
-        _status = '⚠️ Upload failed: Invalid or missing Doc ID. Check file format (e.g., missing Operator_Name).';
+        _status = '⚠️ Upload failed: Invalid or missing Doc ID. Check file format (e.g., missing Operator Name or Reg No).';
         _isLoading = false;
         notifyListeners();
         return;
@@ -67,35 +68,66 @@ class SearchProvider with ChangeNotifier {
         final sheetData = entry.value as model.AnalysisData;
         final rows = sheetData.rows;
 
-        for (var row in rows) {
-          final regNo = (row['Reg_No']?.toString().trim().toLowerCase() ?? 'unknown').isEmpty ? 'unknown' : row['Reg_No']?.toString().trim().toLowerCase() ?? 'unknown';
-          if (regNo == 'unknown') continue; // Skip invalid or empty Reg Nos
+        if (rows.isEmpty) {
+          logger.w('No rows found in sheet ${entry.key} for docId $docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
+          continue;
+        }
 
+        for (var row in rows) {
+          final regNoRaw = row['Reg No']?.toString().trim(); // Updated to 'Reg No'
+          final regNo = (regNoRaw?.isNotEmpty ?? false) ? regNoRaw!.toLowerCase() : 'unknown';
+          if (regNo == 'unknown') {
+            logger.w('Skipping row with invalid or empty Reg No: $row at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
+            continue; // Skip invalid or empty Reg Nos
+          }
+
+          // Parse and validate dates
+          DateTime? arrDate;
+          DateTime? depDate;
+          try {
+            if (row['Arr Local'] != null && row['Arr Local'].toString().isNotEmpty) { // Updated to 'Arr Local'
+              arrDate = DateTime.parse(row['Arr Local'].toString()).toLocal();
+            }
+            if (row['Dep Local'] != null && row['Dep Local'].toString().isNotEmpty) { // Updated to 'Dep Local'
+              depDate = DateTime.parse(row['Dep Local'].toString()).toLocal();
+            }
+          } catch (e) {
+            logger.w('Error parsing date for Reg No $regNo: $e, using "Unknown" at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
+          }
+
+          // Initialize or update flight data
           _flightData[regNo] = _flightData[regNo] ?? {
-            'Reg_No': regNo,
-            'Operator_Name': row['Operator_Name']?.toString() ?? 'Unknown',
-            'Aircraft_Type': row['Aircraft_Type']?.toString() ?? 'Unknown',
-            'Arr_Date': row['Arr_Local'] != null
-                ? DateTime.parse(row['Arr_Local'].toString()).toLocal().toString().split(' ')[0]
-                : 'Unknown',
-            'Dep_Date': row['Dep_Local'] != null
-                ? DateTime.parse(row['Dep_Local'].toString()).toLocal().toString().split(' ')[0]
-                : 'Unknown',
-            'Arr_Bill_Status': row['Arr_Bill_Status']?.toString() ?? 'unbilled',
-            'Dep_Bill_Status': row['Dep_Bill_Status']?.toString() ?? 'unbilled',
-            'UDF_Bill_Status': row['UDF_Bill_Status']?.toString() ?? 'unbilled',
-            'Linkage_Status': row['Linkage_Status']?.toString() ?? 'Unknown',
-            'Airtime_Hours': row['Airtime_Hours']?.toString() ?? '0.0',
+            'Reg No': regNo, // Updated to 'Reg No'
+            'Operator Name': row['Operator Name']?.toString() ?? 'Unknown', // Updated to 'Operator Name'
+            'Aircraft Type': row['Aircraft Type']?.toString() ?? 'Unknown', // Updated to 'Aircraft Type'
+            'Arr Date': arrDate?.toIso8601String().split('T')[0] ?? 'Unknown', // Updated to 'Arr Date'
+            'Dep Date': depDate?.toIso8601String().split('T')[0] ?? 'Unknown', // Updated to 'Dep Date'
+            'Arr Bill Status': row['Arr Bill Status']?.toString() ?? 'unbilled', // Updated to 'Arr Bill Status'
+            'Dep Bill Status': row['Dep Bill Status']?.toString() ?? 'unbilled', // Updated to 'Dep Bill Status'
+            'UDF Bill Status': row['UDF Bill Status']?.toString() ?? 'unbilled', // Updated to 'UDF Bill Status'
+            'Linkage Status': row['Linkage Status']?.toString() ?? 'Unknown', // Updated to 'Linkage Status'
+            'Airtime Hours': row['Airtime Hours']?.toString() ?? '0.0', // Updated to 'Airtime Hours'
             'Count': 0, // Initialize count
+            'Landing': row['Landing']?.toString().replaceAll('₹', '') ?? '0.0', // Numeric value without currency symbol
+            'UDF Charge': row['UDF Charge']?.toString().replaceAll('₹', '') ?? '0.0', // Numeric value without currency symbol
           };
 
-          // Update count if multiple entries for the same Reg No
-          _flightData[regNo]!['Count'] = (_flightData[regNo]!['Count'] as int) + 1;
+          // Update count and aggregate numeric fields
+          final flightData = _flightData[regNo]!;
+          flightData['Count'] = (flightData['Count'] as int) + 1;
+
+          final double prevLanding = double.tryParse(flightData['Landing'] as String) ?? 0.0;
+          final double addLanding = double.tryParse(row['Landing']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0;
+          flightData['Landing'] = (prevLanding + addLanding).toStringAsFixed(2);
+
+          final double prevUdf = double.tryParse(flightData['UDF Charge'] as String) ?? 0.0;
+          final double addUdf = double.tryParse(row['UDF Charge']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0;
+          flightData['UDF Charge'] = (prevUdf + addUdf).toStringAsFixed(2);
         }
       }
 
       _status = '✅ Registration data loaded for ${_flightData.length} aircraft.';
-      logger.d('Loaded registrations for ${_flightData.length} aircraft at ${DateTime(2025, 8, 3, 2, 44, 0).toIso8601String()}');
+      logger.d('Loaded registrations for ${_flightData.length} aircraft at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
     } catch (e) {
       _status = e.toString().contains('Upload failed')
           ? '❌ Upload failed: ${e.toString().replaceAll('Exception: Upload failed: ', '')}'
@@ -106,7 +138,7 @@ class SearchProvider with ChangeNotifier {
                   : e.toString().contains('timed out')
                       ? '❌ ${e.toString()}'
                       : '❌ Unexpected error: ${e.toString()}';
-      logger.e('Error fetching registrations: $e at ${DateTime(2025, 8, 3, 2, 44, 0).toIso8601String()}');
+      logger.e('Error fetching registrations: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
     } finally {
       _isLoading = false;
       notifyListeners();

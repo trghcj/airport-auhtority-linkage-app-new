@@ -9,12 +9,9 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import os
 import logging
-import shutil
 from werkzeug.utils import secure_filename
 import firebase_admin
 from firebase_admin import credentials, firestore
-import subprocess
-import numpy as np
 from google.api_core import exceptions
 from google.api_core import retry
 import json
@@ -25,7 +22,7 @@ import pytz
 import re
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
 
 # Configure logging
@@ -40,7 +37,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Set current date and time dynamically
-current_date = datetime.now(pytz.timezone('Asia/Kolkata'))
+current_date = datetime.now(pytz.timezone('Asia/Kolkata')).replace(hour=3, minute=28, second=0, microsecond=0)  # 03:28 AM IST, October 27, 2025
 
 # CORS configuration: Dynamically allow the requesting origin
 CORS(app, resources={r"/*": {"origins": "*", "supports_credentials": True}})
@@ -53,7 +50,7 @@ logger.info(f"Matplotlib backend set to: {matplotlib.get_backend()} at {current_
 
 def initialize_firestore():
     try:
-        cred_path = os.getenv('FIREBASE_CRED_PATH', r'"C:\Users\suremdra singh\Desktop\Flutter project\airport-authority-linkage-app\lib\flask-backend\airport-authority-linkage-firebase-adminsdk-fbsvc-1c0b27201d.json"')
+        cred_path = os.getenv('FIREBASE_CRED_PATH', r"C:\Users\suremdra singh\Desktop\Flutter project\airport-authority-linkage-app\lib\flask-backend\airport-authority-linkage-firebase-adminsdk-fbsvc-d146646df7.json")
         if not os.path.exists(cred_path):
             logger.error(f"Firebase credential file not found at: {cred_path} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
             raise FileNotFoundError(f"Credential file missing at {cred_path}")
@@ -121,13 +118,15 @@ def clean_out_of_range(df):
         df.loc[mask, col] = None
     return df
 
+# ENHANCEMENT: More robust column name normalization
 def normalize_column_name(col):
     col = str(col).strip()
-    col = re.sub(r'[\s\./&]+', '_', col)
-    col = re.sub(r'_+', '_', col).rstrip('_')
+    col_key = re.sub(r'[^\w\s\.]', '', col).strip()
+
     departure_mappings = {
         'SL No.': 'SL_No', 'Airport Code': 'Airport_Code', 'Airport Name': 'Airport_Name',
         'Region': 'Region', 'ProfitCenter': 'Profit_Center', 'Operator Name': 'Operator_Name',
+        'Operator': 'Operator_Name', 'OperatorName': 'Operator_Name',
         'CA12 No.': 'CA12_No', 'Reg No.': 'Reg_No', 'Max Allup Wt': 'Max_Allup_Wt',
         'Seating Capacity': 'Seating_Capacity', 'Helicopter': 'Helicopter',
         'Aircraft Type': 'Aircraft_Type', 'Arr Date': 'Arr_Date', 'Arr GMT': 'Arr_GMT',
@@ -147,18 +146,21 @@ def normalize_column_name(col):
         'Dep Bill Status': 'Dep_Bill_Status', 'UDF Bill Status': 'UDF_Bill_Status'
     }
     base_mappings = {
-        'Payer ID': 'Payer_ID', 'Customer Name': 'Customer_Name', 'VAN SPOC': 'VAN_SPOC',
+        'Payer ID': 'Payer_ID', 'Customer Name': 'Operator_Name', 'VAN SPOC': 'VAN_SPOC',
         'CF Validity': 'CF_Validity', 'Fleet Count': 'Fleet_Count', 'Opening Balance': 'Opening_Balance',
         'Assessment': 'Assessment', 'Realisation': 'Realisation', 'Closing Balance': 'Closing_Balance',
         'SD/BG': 'SD_BG', 'Avg Monthly Assessment': 'Avg_Monthly_Assessment'
     }
-    if col in departure_mappings:
-        mapped_col = departure_mappings[col]
-    elif col in base_mappings:
-        mapped_col = base_mappings[col]
+
+    if col_key in departure_mappings:
+        mapped_col = departure_mappings[col_key]
+    elif col_key in base_mappings:
+        mapped_col = base_mappings[col_key]
     else:
-        mapped_col = col
-    logger.debug(f"Normalized '{col}' to '{mapped_col}' at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+        mapped_col = re.sub(r'[\s\./&]+', '_', col_key)
+        mapped_col = re.sub(r'_+', '_', mapped_col).rstrip('_')
+
+    logger.debug(f"Normalized '{col}' (key: '{col_key}') to '{mapped_col}' at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
     return mapped_col
 
 def determine_billing_status(row, charge_col, bill_status_col):
@@ -183,32 +185,67 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
         for sheet in excel.sheet_names:
             logger.info(f"Processing sheet: {sheet} in {filename} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
             stream.seek(0)
-            header_row = 2 if file_type == 'departure' else 0
-            skip_rows = 0
-            logger.debug(f"Using header_row={header_row} (1-based: {header_row + 1}), skip_rows={skip_rows} for {file_type} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+            
+            # --- START AGGRESSIVE HEADER FIX ---
+            
+            if file_type == 'departure':
+                # 1. Define the EXPECTED column names explicitly (using the normalized names)
+                # This list MUST match the columns in your file, in order, after normalization.
+                departure_normalized_columns = [
+                    'SL_No', 'Airport_Code', 'Airport_Name', 'Region', 'Profit_Center', 'Operator_Name',
+                    'CA12_No', 'Reg_No', 'Max_Allup_Wt', 'Seating_Capacity', 'Helicopter',
+                    'Aircraft_Type', 'Arr_Date', 'Arr_GMT', 'Arr_Flight_No', 'Dep_Location', 
+                    'Arr_Nature', 'Arr_GCD', 'Arr_Sch', 'Arr_RCS_Status', 'Arr_RCS_Category',
+                    'Dep_Date', 'Dep_GMT', 'Dep_Flight_No', 'Dest_Location', 'Dep_Nature', 
+                    'Dep_GCD', 'Dep_Sch', 'Dep_RCS_Status', 'Dep_RCS_Category', 'Credit_Facility',
+                    'Operator_Type', 'Landing', 'Parking', 'Open_Parking', 'Housing', 'RNFC', 
+                    'TNLC', 'Arr_Watch', 'Dep_Watch', 'Counter', 'XRay', 'UDF_Charge', 
+                    'OLD_IN_PAX', 'OLD_US_PAX', 'NEW_IN_PAX', 'NEW_US_PAX', 'OLD_IN_RATE',
+                    'OLD_US_RATE', 'NEW_IN_RATE', 'NEW_US_RATE', 'Unique_Id', 'Arr_Bill_Status',
+                    'Dep_Bill_Status', 'UDF_Bill_Status'
+                ]
 
-            raw_sheet = pd.read_excel(stream, sheet_name=sheet, engine='openpyxl', nrows=5)
-            logger.debug(f"Raw first 5 rows of {sheet}:\n{raw_sheet.to_string()} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-            stream.seek(0)
+                # 2. Skip the first 3 rows: 2 metadata rows + 1 actual header row.
+                # This ensures the DataFrame starts directly at the DATA.
+                skip_rows = 3 
+                
+                # Load the DataFrame with NO HEADER, starting from the first data row
+                df = pd.read_excel(stream, sheet_name=sheet, skiprows=skip_rows, header=None, engine='openpyxl')
+                
+                # 3. Rename columns using the pre-defined list. This guarantees the 'Operator_Name' exists.
+                if len(df.columns) >= len(departure_normalized_columns):
+                    df = df.iloc[:, :len(departure_normalized_columns)] # Trim excess columns
+                    df.columns = departure_normalized_columns
+                else:
+                    # Fallback error if the data rows don't even have enough columns
+                    logger.error("Data columns count is less than expected departure columns. Cannot force headers.")
+                    result[sheet] = {"error": f"File structure error: Expected {len(departure_normalized_columns)} columns, found only {len(df.columns)} after skipping {skip_rows} rows."}
+                    return result
 
-            df = pd.read_excel(stream, sheet_name=sheet, header=header_row, skiprows=skip_rows, engine='openpyxl')
-            logger.info(f"Raw DataFrame shape for {sheet} with header row {header_row + 1}: {df.shape} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-            logger.info(f"Raw first 5 rows for {sheet}:\n{df.head().to_string()} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-            logger.info(f"Raw columns in {sheet}: {list(df.columns)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+                logger.debug(f"Applied aggressive header fix: skiprows={skip_rows}. Columns forced.")
+                
+            else: # file_type == 'base' (Header is at row 1, index 0)
+                # Use default behavior (header=0) and then normalize names.
+                df = pd.read_excel(stream, sheet_name=sheet, header=0, engine='openpyxl')
+                df.columns = [normalize_column_name(col) for col in df.columns]
+                logger.debug(f"Loaded base file with header=0 and applied normalization.")
+
+            # Logging for validation
+            logger.info(f"Raw DataFrame shape for {sheet}: {df.shape} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+            logger.info(f"Normalized columns in {sheet}: {list(df.columns)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
+            # --- END AGGRESSIVE HEADER FIX ---
 
             if df.empty or df.columns.empty:
                 logger.warning(f"Sheet {sheet} is empty or has no columns in {filename} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
                 result[sheet] = {"error": "Empty sheet or no columns detected"}
                 continue
 
-            df.columns = [normalize_column_name(col) for col in df.columns]
-            logger.info(f"Normalized columns in {sheet}: {list(df.columns)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-
-            required_column = 'Customer_Name' if file_type == 'base' else 'Operator_Name'
+            required_column = 'Operator_Name' if file_type == 'base' else 'Operator_Name'
             if required_column not in df.columns:
-                logger.error(f"{required_column} column not found or unmapped in sheet {sheet}. Found: {list(df.columns)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-                result[sheet] = {"error": f"{required_column} column not found or unmapped. Found: {list(df.columns)}"}
-                continue
+                logger.error(f"{required_column} column NOT FOUND after forced headers in sheet {sheet}. Found: {list(df.columns)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+                result[sheet] = {"error": f"{required_column} column not found after force-mapping. Found: {list(df.columns)}"}
+                return result
 
             if file_type == 'departure' and 'Arr_Bill_Status' not in df.columns:
                 logger.warning(f"Arr_Bill_Status column missing in sheet {sheet}, attempting to infer at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
@@ -271,6 +308,19 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                     logger.debug(f"Row {index} in {sheet} - Raw Reg_No: '{raw_reg_no}', Type: {type(raw_reg_no)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
                     reg_no = str(raw_reg_no).strip() if pd.notna(raw_reg_no) and raw_reg_no != '' else 'Unknown'
 
+                    # Enhanced Operator Name handling
+                    raw_operator = row.get('Operator_Name')
+                    operator_name = str(raw_operator).strip() if pd.notna(raw_operator) and raw_operator != '' else 'Unknown'
+                    if operator_name.upper() == 'N/A' or not operator_name:
+                        operator_name = 'Unknown'
+                    logger.debug(f"Row {index} in {sheet} - Raw Operator_Name: '{raw_operator}', Processed: '{operator_name}' at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
+                    raw_region = row.get('Region')
+                    region = str(raw_region).strip() if pd.notna(raw_region) and raw_region != '' else 'Unknown'
+                    if region.upper() == 'N/A' or not region:
+                        region = 'Unknown'
+                    logger.debug(f"Row {index} in {sheet} - Raw Region: '{raw_region}', Processed: '{region}' at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
                     processed_row = {
                         'Unique_Id': f"FLIGHT_{index}_{current_date.strftime('%Y%m%d%H%M%S')}",
                         'Arrival_GMT': arr_gmt.isoformat() if arr_gmt else "",
@@ -278,7 +328,8 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                         'Dep_Location': str(row.get('Dep_Location', '')),
                         'Dest_Location': str(row.get('Dest_Location', '')),
                         'Airport_Name': str(row.get('Airport_Name', '')),
-                        'Operator_Name': str(row.get('Operator_Name', '') or 'Unknown'),
+                        'Operator_Name': operator_name,
+                        'Region': region,
                         'Aircraft_Type': str(row.get('Aircraft_Type', '') or 'Unknown'),
                         'Reg_No': reg_no,
                         'Airtime_Hours': f"{airtime_hours:.2f}",
@@ -311,19 +362,18 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                         'file_type': file_type
                     }
                     processed_data.append(processed_row)
-            else:  # base file processing
-                if 'CF_Validity' in df.columns:
-                    df['CF_Validity'] = df['CF_Validity'].astype(str).replace('NaT', '')
-                numeric_columns = ['Opening_Balance', 'Assessment', 'Realisation', 'Closing_Balance', 'SD_BG', 'Avg Monthly Assessment']
-                for col in numeric_columns:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-                if 'Customer_Name' in df.columns:
-                    df['Customer_Name'] = df['Customer_Name'].astype(str).replace('nan', '')
-                if 'Reg_No' in df.columns:
-                    df['Reg_No'] = df['Reg_No'].apply(lambda x: str(x).strip() if pd.notna(x) and x != '' else 'Unknown')
-                    logger.debug(f"Base file Reg_No values: {df['Reg_No'].tolist()} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-                processed_data = df.to_dict('records')
+            else:  # file_type == 'base'
+                for index, row in df.iterrows():
+                    processed_row = {
+                        'Unique_Id': f"BASE_{index}_{current_date.strftime('%Y%m%d%H%M%S')}",
+                        'Operator_Name': str(row.get('Operator_Name', 'Unknown')),
+                        'Assessment': float(row.get('Assessment', 0.0)),
+                        'Realisation': float(row.get('Realisation', 0.0)),
+                        'Closing_Balance': float(row.get('Closing_Balance', 0.0)),
+                        'Fleet_Count': float(row.get('Fleet_Count', 0.0)),
+                        'file_type': file_type
+                    }
+                    processed_data.append(processed_row)
 
             uploaded_data = pd.DataFrame(processed_data)
             if uploaded_data.empty or uploaded_data.columns.empty:
@@ -354,13 +404,13 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                     plt.close()
                     chart_base64_bar = base64.b64encode(chart_buf_bar.getvalue()).decode('utf-8')
 
-            if file_type == 'base' and 'Customer_Name' in uploaded_data.columns and 'Assessment' in uploaded_data.columns:
+            if file_type == 'base' and 'Operator_Name' in uploaded_data.columns and 'Assessment' in uploaded_data.columns:
                 plt.figure(figsize=(10, 6))
-                assessments = uploaded_data.groupby('Customer_Name')['Assessment'].sum().nlargest(5).dropna()
+                assessments = uploaded_data.groupby('Operator_Name')['Assessment'].sum().nlargest(5).dropna()
                 if not assessments.empty:
                     assessments.plot(kind='bar', color='lightgreen')
-                    plt.title(f'Top 5 Customers by Assessment - {sheet}')
-                    plt.xlabel('Customer Name')
+                    plt.title(f'Top 5 Operators by Assessment - {sheet}')
+                    plt.xlabel('Operator Name')
                     plt.ylabel('Total Assessment')
                     plt.xticks(rotation=45, ha='right')
                     plt.tight_layout()
@@ -370,6 +420,7 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
 
             if file_type == 'departure' and 'Aircraft_Type' in uploaded_data.columns:
                 type_counts = uploaded_data['Aircraft_Type'].value_counts().head(5).dropna()
+                logger.debug(f"Pie chart data for {sheet} - Aircraft_Type counts: {type_counts.to_dict()} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
                 if not type_counts.empty:
                     plt.figure(figsize=(8, 8))
                     plt.pie(type_counts.astype(float), labels=type_counts.index, autopct='%1.1f%%', startangle=90)
@@ -379,9 +430,13 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                     plt.savefig(chart_buf_pie, format='png')
                     plt.close()
                     chart_base64_pie = base64.b64encode(chart_buf_pie.getvalue()).decode('utf-8')
+                    logger.info(f"Pie chart generated for {sheet} with base64 length: {len(chart_base64_pie)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+                else:
+                    logger.warning(f"No valid data for pie chart in {sheet} - Aircraft_Type counts empty after filtering at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
 
             if file_type == 'base' and 'Fleet_Count' in uploaded_data.columns:
                 fleet_counts = uploaded_data['Fleet_Count'].value_counts().head(5).dropna()
+                logger.debug(f"Pie chart data for {sheet} - Fleet_Count counts: {fleet_counts.to_dict()} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
                 if not fleet_counts.empty:
                     plt.figure(figsize=(8, 8))
                     plt.pie(fleet_counts.astype(float), labels=fleet_counts.index, autopct='%1.1f%%', startangle=90)
@@ -391,6 +446,9 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                     plt.savefig(chart_buf_pie, format='png')
                     plt.close()
                     chart_base64_pie = base64.b64encode(chart_buf_pie.getvalue()).decode('utf-8')
+                    logger.info(f"Pie chart generated for {sheet} with base64 length: {len(chart_base64_pie)} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+                else:
+                    logger.warning(f"No valid data for pie chart in {sheet} - Fleet_Count counts empty after filtering at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
 
             doc_id = f"analysis_{file_type}_{sheet}_{current_date.strftime('%Y%m%d%H%M%S')}"
             data_dict = uploaded_data.to_dict(orient='records')
@@ -414,8 +472,8 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                 'rows': [row for row in uploaded_data.fillna('').to_dict(orient='records')[:100]],
                 'stats': {
                     'total_flights': len(uploaded_data) if file_type == 'departure' else 0,
-                    'unique_operators': uploaded_data[required_column].nunique() if required_column in uploaded_data.columns else 0,
-                    'top_operator': uploaded_data[required_column].value_counts().idxmax() if required_column in uploaded_data.columns and not uploaded_data[required_column].empty else None,
+                    'unique_operators': uploaded_data['Operator_Name'].nunique() if 'Operator_Name' in uploaded_data.columns else 0,
+                    'top_operator': uploaded_data['Operator_Name'].value_counts().idxmax() if 'Operator_Name' in uploaded_data.columns and not uploaded_data['Operator_Name'].empty else None,
                     'avg_airtime': float(uploaded_data['Airtime_Hours'].astype(float).mean()) if file_type == 'departure' and 'Airtime_Hours' in uploaded_data.columns else 0.0,
                     'arr_billed_count': int(uploaded_data[uploaded_data['Arr_Bill_Status'] == 'billed'].shape[0]) if file_type == 'departure' and 'Arr_Bill_Status' in uploaded_data.columns else 0,
                     'dep_billed_count': int(uploaded_data[uploaded_data['Dep_Bill_Status'] == 'billed'].shape[0]) if file_type == 'departure' and 'Dep_Bill_Status' in uploaded_data.columns else 0,
@@ -431,7 +489,7 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                     'total_counter_charges': float(uploaded_data['Counter'].sum()) if file_type == 'departure' and 'Counter' in uploaded_data.columns else 0.0,
                     'total_xray_charges': float(uploaded_data['XRay'].sum()) if file_type == 'departure' and 'XRay' in uploaded_data.columns else 0.0,
                     'total_udf_charges': float(uploaded_data['UDF_Charge'].sum()) if file_type == 'departure' and 'UDF_Charge' in uploaded_data.columns else 0.0,
-                    'total_operators': uploaded_data[required_column].nunique() if file_type == 'base' else 0,
+                    'total_operators': uploaded_data['Operator_Name'].nunique() if file_type == 'base' else 0,
                     'total_assessment': float(uploaded_data['Assessment'].sum()) if file_type == 'base' and 'Assessment' in uploaded_data.columns else 0.0,
                     'total_realisation': float(uploaded_data['Realisation'].sum()) if file_type == 'base' and 'Realisation' in uploaded_data.columns else 0.0,
                     'total_closing_balance': float(uploaded_data['Closing_Balance'].sum()) if file_type == 'base' and 'Closing_Balance' in uploaded_data.columns else 0.0
@@ -439,7 +497,7 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                 'summary': uploaded_data.describe(exclude=['datetime64[ns, UTC]']).fillna('').to_dict() if not uploaded_data.empty else {},
                 'chart_bar': chart_base64_bar,
                 'chart_pie': chart_base64_pie,
-                'formal_summary': f"The analysis of '{sheet}' shows {len(uploaded_data)} records for {file_type} data, with {uploaded_data[required_column].nunique()} {required_column.replace('_', ' ').lower()}s." if not uploaded_data.empty else "No data processed",
+                'formal_summary': f"The analysis of '{sheet}' shows {len(uploaded_data)} records for {file_type} data, with {uploaded_data['Operator_Name'].nunique()} operators." if not uploaded_data.empty else "No data processed",
                 'timestamp': firestore.SERVER_TIMESTAMP,
                 'total_records': len(uploaded_data)
             }
@@ -447,7 +505,6 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
             def set_main_doc():
                 db.collection("analysis_results").document(doc_id).set(main_doc)
                 logger.info(f"Successfully saved main document {doc_id} to Firestore at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-
             set_main_doc()
 
             for i, chunk in enumerate(data_chunks):
@@ -456,7 +513,6 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
                 def set_data_chunk():
                     db.collection("analysis_results").document(doc_id).collection("data").document(sub_doc_id).set({'records': chunk})
                     logger.info(f"Successfully saved data chunk {sub_doc_id} for {doc_id} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-
                 set_data_chunk()
 
             result[sheet] = {
@@ -476,7 +532,7 @@ def process_excel_file(file, file_type='departure', filename="upload.xlsx"):
         logger.error(f"Error processing file {filename} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}: {e}\n{traceback.format_exc()}")
         return {"error": str(e), "details": traceback.format_exc()}
     finally:
-        for buf_name in ['chart_buf_bar', 'chart_buf_pie', 'stream']:
+        for buf_name in ['chart_buf_bar', 'chart_pie', 'stream']:
             buf = locals().get(buf_name)
             if buf and hasattr(buf, 'close'):
                 buf.close()
@@ -493,38 +549,129 @@ def upload():
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return response
 
-    departure_file = request.files.get('departure_file')
-    logger.debug(f"Received file for /upload: departure={departure_file.filename if departure_file else 'None'} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+    # ---- NEW: accept multiple files under the key 'departure_files[]' ----
+    departure_files = request.files.getlist('departure_files[]')
+    logger.debug(f"Received {len(departure_files)} files under 'departure_files[]': {[f.filename for f in departure_files]} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")  # NEW: debug log
+    if not departure_files or any(not f.filename for f in departure_files):
+        logger.error("No valid departure files provided in /upload request")
+        resp = make_response(jsonify({'success': False, 'error': 'At least one valid departure Excel file is required'}), 400)  # FIXED: removed duplicate "valid"
+        resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        return resp
 
-    if not departure_file or not departure_file.filename or not departure_file.filename.lower().endswith(('.xlsx', '.xls')):
-        logger.error(f"No valid departure file provided in /upload request at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-        response = make_response(jsonify({'success': False, 'error': 'Valid departure Excel file is required'}), 400)
-        origin = request.headers.get('Origin')
-        response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
-        return response
-    
     try:
-        result = process_excel_file(departure_file, file_type='departure', filename=departure_file.filename)
-        if any('error' in sheet_data for sheet_data in result.values()):
-            logger.error(f"Departure file processing failed with errors: {result} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-            response = make_response(jsonify({'success': False, 'sheets': result}), 400)
-            origin = request.headers.get('Origin')
-            response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
-            return response
+        batch_doc_id = f"analysis_departure_{current_date.strftime('%Y%m%d%H%M%S')}"
 
-        doc_id = next(iter(result.values()))['doc_id']
-        logger.info(f"Upload successful with doc_id: {doc_id} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-        response = make_response(jsonify({'success': True, 'doc_id': doc_id, 'sheets': result}), 200)
-        origin = request.headers.get('Origin')
-        response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
-        return response
-    
+        all_sheets = {}
+        all_processed_rows = []          # <-- will be chunked later
+        all_stats = {
+            'total_flights': 0, 'unique_operators': 0, 'top_operator': None,
+            'avg_airtime': 0.0, 'arr_billed_count': 0, 'dep_billed_count': 0,
+            'udf_billed_count': 0, 'total_landing_charges': 0.0,
+            'total_parking_charges': 0.0, 'total_open_parking_charges': 0.0,
+            'total_housing_charges': 0.0, 'total_rnfc_charges': 0.0,
+            'total_tnlc_charges': 0.0, 'total_arr_watch_charges': 0.0,
+            'total_dep_watch_charges': 0.0, 'total_counter_charges': 0.0,
+            'total_xray_charges': 0.0, 'total_udf_charges': 0.0,
+            'total_operators': 0, 'total_assessment': 0.0,
+            'total_realisation': 0.0, 'total_closing_balance': 0.0
+        }
+
+        chart_bar_b64 = ''
+        chart_pie_b64 = ''
+
+        for idx, file in enumerate(departure_files):
+            if not file.filename.lower().endswith(('.xlsx', '.xls')):
+                logger.warning(f"Skipping non-Excel file {file.filename}")
+                continue
+
+            logger.info(f"Processing departure file {idx+1}/{len(departure_files)}: {file.filename}")
+            sheet_result = process_excel_file(file, file_type='departure', filename=file.filename)
+
+            for sheet, data in sheet_result.items():
+                if 'error' in data:
+                    all_sheets[f"{file.filename}__{sheet}"] = data
+                    continue
+
+                for row in data.get('rows', []):
+                    row['Unique_Id'] = f"{file.filename}__{row['Unique_Id']}"
+
+                all_sheets[f"{file.filename}__{sheet}"] = data
+
+                processed_df = pd.DataFrame(data.get('rows', []))
+                if not processed_df.empty:
+                    processed_df['source_file'] = file.filename
+                    all_processed_rows.append(processed_df)
+
+                file_stats = data.get('stats', {})
+                for k in all_stats:
+                    if k in file_stats and isinstance(file_stats[k], (int, float)):
+                        all_stats[k] += float(file_stats[k])
+
+                if not chart_bar_b64 and data.get('chart_bar'):
+                    chart_bar_b64 = data['chart_bar']
+                if not chart_pie_b64 and data.get('chart_pie'):
+                    chart_pie_b64 = data['chart_pie']
+
+        if not all_processed_rows:
+            raise ValueError("No valid data extracted from any file")
+
+        full_df = pd.concat(all_processed_rows, ignore_index=True)
+        all_stats['total_flights'] = len(full_df)
+        all_stats['unique_operators'] = full_df['Operator_Name'].nunique()
+        all_stats['top_operator'] = full_df['Operator_Name'].value_counts().idxmax() if not full_df['Operator_Name'].empty else 'Unknown'
+
+        data_dict = full_df.to_dict(orient='records')
+        for rec in data_dict:
+            for k, v in rec.items():
+                if pd.isna(v):
+                    rec[k] = ""
+
+        max_chunk_size = 900000
+        chunk_size = 500
+        data_chunks = [data_dict[i:i + chunk_size] for i in range(0, len(data_dict), chunk_size)]
+
+        main_doc = {
+            'sheet_name': 'combined_departure_batch',
+            'file_type': 'departure',
+            'columns': full_df.columns.tolist(),
+            'rows': full_df.head(100).fillna('').to_dict(orient='records'),
+            'stats': all_stats,
+            'summary': full_df.describe(exclude=['datetime64[ns, UTC]']).fillna('').to_dict(),
+            'chart_bar': chart_bar_b64,
+            'chart_pie': chart_pie_b64,
+            'formal_summary': f"Batch analysis of {len(departure_files)} departure file(s) – {len(full_df)} total flight records, {full_df['Operator_Name'].nunique()} unique operators.",
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'total_records': len(full_df)
+        }
+
+        @firestore_retry()
+        def set_main():
+            db.collection("analysis_results").document(batch_doc_id).set(main_doc)
+
+        set_main()
+
+        for i, chunk in enumerate(data_chunks):
+            sub_id = f"data_chunk_{i}"
+            @firestore_retry()
+            def set_chunk():
+                db.collection("analysis_results").document(batch_doc_id).collection("data").document(sub_id).set({'records': chunk})
+            set_chunk()
+
+        response_payload = {
+            'success': True,
+            'doc_id': batch_doc_id,
+            'sheets': all_sheets
+        }
+        resp = make_response(jsonify(response_payload), 200)
+        resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        logger.info(f"Batch upload successful – doc_id: {batch_doc_id}")
+        return resp
+
     except Exception as e:
-        logger.error(f"Error in /upload at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}: {str(e)}\n{traceback.format_exc()}")
-        response = make_response(jsonify({'success': False, 'error': str(e), 'details': traceback.format_exc()}), 500)
-        origin = request.headers.get('Origin')
-        response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
-        return response
+        logger.error(f"Error in /upload: {e}\n{traceback.format_exc()}")
+        resp = make_response(jsonify({'success': False, 'error': str(e), 'details': traceback.format_exc()}), 500)
+        resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        return resp
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze():
@@ -638,7 +785,6 @@ def search():
                     'UDF_Charge': f"₹{float(row.get('UDF_Charge', 0.0)):.2f}"
                 })
 
-        # Apply pagination
         start_idx = page * limit
         end_idx = start_idx + limit
         paginated_results = results[start_idx:end_idx]
@@ -693,10 +839,15 @@ def stats():
                 for row in data:
                     if row.get('file_type') != 'departure':
                         continue
-                    operator = row.get('Operator_Name', 'Unknown')
-                    operator_stats.setdefault(operator, {
-                        'Operator_Name': operator,
-                        'Region': row.get('Dep_Location', 'N/A'),
+                    raw_operator = row.get('Operator_Name')
+                    operator_name = str(raw_operator).strip() if raw_operator and pd.notna(raw_operator) and raw_operator != '' else 'Unknown'
+                    if operator_name.upper() == 'N/A' or not operator_name:
+                        operator_name = 'Unknown'
+                        logger.warning(f"Operator_Name missing or invalid for row {row.get('Unique_Id', 'Unknown')}, setting to 'Unknown' at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
+                    operator_stats.setdefault(operator_name, {
+                        'Operator_Name': operator_name,
+                        'Region': row.get('Region', 'Unknown'),
                         'Flight_Count': 0,
                         'Avg_Airtime_Hours': 0.0,
                         'Total_Hours': 0.0,
@@ -711,30 +862,86 @@ def stats():
                         'Total_Landing_Charges': 0.0,
                         'Total_UDF_Charges': 0.0
                     })
-                    operator_stats[operator]['Flight_Count'] += 1
-                    airtime = float(row.get('Airtime_Hours', 0.0)) if row.get('Airtime_Hours') else 0.0
-                    operator_stats[operator]['Avg_Airtime_Hours'] += airtime
+                    operator_stats[operator_name]['Flight_Count'] += 1
+                    airtime = float(row.get('Airtime_Hours', 0.0)) if row.get('Airtime_Hours') and pd.notna(row.get('Airtime_Hours')) else 0.0
+                    operator_stats[operator_name]['Avg_Airtime_Hours'] += airtime
                     arr_gmt = row.get('Arr_Datetime_GMT')
                     dep_gmt = row.get('Dep_Datetime_GMT')
-                    if arr_gmt and dep_gmt:
-                        airtime_hours = max(0, (dep_gmt - arr_gmt).total_seconds() / 3600)
-                        operator_stats[operator]['Total_Hours'] += airtime_hours
-                    operator_stats[operator]['Same_Linkage_Count'] += 1 if row.get('Linkage_Status') == 'Same' else 0
-                    operator_stats[operator]['Different_Linkage_Count'] += 1 if row.get('Linkage_Status') == 'Different' else 0
-                    operator_stats[operator]['Arr_Billed_Count'] += 1 if row.get('Arr_Bill_Status') == 'billed' else 0
-                    operator_stats[operator]['Arr_UnBilled_Count'] += 1 if row.get('Arr_Bill_Status') == 'unbilled' else 0
-                    operator_stats[operator]['Dep_Billed_Count'] += 1 if row.get('Dep_Bill_Status') == 'billed' else 0
-                    operator_stats[operator]['Dep_UnBilled_Count'] += 1 if row.get('Dep_Bill_Status') == 'unbilled' else 0
-                    operator_stats[operator]['UDF_Billed_Count'] += 1 if row.get('UDF_Bill_Status') == 'billed' else 0
-                    operator_stats[operator]['UDF_UnBilled_Count'] += 1 if row.get('UDF_Bill_Status') == 'unbilled' else 0
-                    operator_stats[operator]['Total_Landing_Charges'] += float(row.get('Landing', 0.0))
-                    operator_stats[operator]['Total_UDF_Charges'] += float(row.get('UDF_Charge', 0.0))
+                    if arr_gmt and dep_gmt and isinstance(arr_gmt, datetime) and isinstance(dep_gmt, datetime):
+                        airtime_hours = abs((dep_gmt - arr_gmt).total_seconds() / 3600)
+                        operator_stats[operator_name]['Total_Hours'] += airtime_hours
+                    operator_stats[operator_name]['Same_Linkage_Count'] += 1 if row.get('Linkage_Status') == 'Same' else 0
+                    operator_stats[operator_name]['Different_Linkage_Count'] += 1 if row.get('Linkage_Status') == 'Different' else 0
+                    operator_stats[operator_name]['Arr_Billed_Count'] += 1 if row.get('Arr_Bill_Status') == 'billed' else 0
+                    operator_stats[operator_name]['Arr_UnBilled_Count'] += 1 if row.get('Arr_Bill_Status') == 'unbilled' else 0
+                    operator_stats[operator_name]['Dep_Billed_Count'] += 1 if row.get('Dep_Bill_Status') == 'billed' else 0
+                    operator_stats[operator_name]['Dep_UnBilled_Count'] += 1 if row.get('Dep_Bill_Status') == 'unbilled' else 0
+                    operator_stats[operator_name]['UDF_Billed_Count'] += 1 if row.get('UDF_Bill_Status') == 'billed' else 0
+                    operator_stats[operator_name]['UDF_UnBilled_Count'] += 1 if row.get('UDF_Bill_Status') == 'unbilled' else 0
+                    operator_stats[operator_name]['Total_Landing_Charges'] += float(row.get('Landing', 0.0))
+                    operator_stats[operator_name]['Total_UDF_Charges'] += float(row.get('UDF_Charge', 0.0))
 
             for operator in operator_stats:
                 flight_count = operator_stats[operator]['Flight_Count']
                 if flight_count > 0:
                     operator_stats[operator]['Avg_Airtime_Hours'] /= flight_count
                 stats_summary.append(operator_stats[operator])
+            logger.debug(f"Operator stats computed: {len(stats_summary)} entries at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
+        elif group_by == 'region':
+            region_stats = {}
+            for doc in docs:
+                data = doc.to_dict().get('records', [])
+                for row in data:
+                    if row.get('file_type') != 'departure':
+                        continue
+                    raw_region = row.get('Region')
+                    region = str(raw_region).strip() if raw_region and pd.notna(raw_region) and raw_region != '' else 'Unknown'
+                    if region.upper() == 'N/A' or not region:
+                        region = 'Unknown'
+                        logger.warning(f"Region missing or invalid for row {row.get('Unique_Id', 'Unknown')}, setting to 'Unknown' at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
+                    region_stats.setdefault(region, {
+                        'Region': region,
+                        'Flight_Count': 0,
+                        'Avg_Airtime_Hours': 0.0,
+                        'Total_Hours': 0.0,
+                        'Same_Linkage_Count': 0,
+                        'Different_Linkage_Count': 0,
+                        'Arr_Billed_Count': 0,
+                        'Arr_UnBilled_Count': 0,
+                        'Dep_Billed_Count': 0,
+                        'Dep_UnBilled_Count': 0,
+                        'UDF_Billed_Count': 0,
+                        'UDF_UnBilled_Count': 0,
+                        'Total_Landing_Charges': 0.0,
+                        'Total_UDF_Charges': 0.0
+                    })
+                    region_stats[region]['Flight_Count'] += 1
+                    airtime = float(row.get('Airtime_Hours', 0.0)) if row.get('Airtime_Hours') and pd.notna(row.get('Airtime_Hours')) else 0.0
+                    region_stats[region]['Avg_Airtime_Hours'] += airtime
+                    arr_gmt = row.get('Arr_Datetime_GMT')
+                    dep_gmt = row.get('Dep_Datetime_GMT')
+                    if arr_gmt and dep_gmt and isinstance(arr_gmt, datetime) and isinstance(dep_gmt, datetime):
+                        airtime_hours = abs((dep_gmt - arr_gmt).total_seconds() / 3600)
+                        region_stats[region]['Total_Hours'] += airtime_hours
+                    region_stats[region]['Same_Linkage_Count'] += 1 if row.get('Linkage_Status') == 'Same' else 0
+                    region_stats[region]['Different_Linkage_Count'] += 1 if row.get('Linkage_Status') == 'Different' else 0
+                    region_stats[region]['Arr_Billed_Count'] += 1 if row.get('Arr_Bill_Status') == 'billed' else 0
+                    region_stats[region]['Arr_UnBilled_Count'] += 1 if row.get('Arr_Bill_Status') == 'unbilled' else 0
+                    region_stats[region]['Dep_Billed_Count'] += 1 if row.get('Dep_Bill_Status') == 'billed' else 0
+                    region_stats[region]['Dep_UnBilled_Count'] += 1 if row.get('Dep_Bill_Status') == 'unbilled' else 0
+                    region_stats[region]['UDF_Billed_Count'] += 1 if row.get('UDF_Bill_Status') == 'billed' else 0
+                    region_stats[region]['UDF_UnBilled_Count'] += 1 if row.get('UDF_Bill_Status') == 'unbilled' else 0
+                    region_stats[region]['Total_Landing_Charges'] += float(row.get('Landing', 0.0))
+                    region_stats[region]['Total_UDF_Charges'] += float(row.get('UDF_Charge', 0.0))
+
+            for region in region_stats:
+                flight_count = region_stats[region]['Flight_Count']
+                if flight_count > 0:
+                    region_stats[region]['Avg_Airtime_Hours'] /= flight_count
+                stats_summary.append(region_stats[region])
+            logger.debug(f"Region stats computed: {len(stats_summary)} entries at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
 
         elif group_by == 'airport':
             airport_stats = {}
@@ -787,7 +994,6 @@ def download_dashboard_pdf():
             response.headers['Access-Control-Allow-Origin'] = origin if origin else '*'
             return response
 
-        # Fetch main document from Firestore
         doc_ref = db.collection("analysis_results").document(doc_id)
         doc = doc_ref.get()
         if not doc.exists:
@@ -805,28 +1011,24 @@ def download_dashboard_pdf():
         chart_bar = data.get('chart_bar', '')
         chart_pie = data.get('chart_pie', '')
 
-        # Create a PDF buffer
         pdf_buffer = io.BytesIO()
         doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
         styles = getSampleStyleSheet()
         elements = []
 
-        # Add title
         elements.append(Paragraph(f"{sheet_name} Dashboard Report", styles['Title']))
         elements.append(Spacer(1, 12))
         elements.append(Paragraph(f"Generated on: {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}", styles['Normal']))
         elements.append(Spacer(1, 12))
 
-        # Add summary
         elements.append(Paragraph("Summary", styles['Heading1']))
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(formal_summary, styles['BodyText']))
         elements.append(Spacer(1, 12))
 
-        # Add stats table
         table_data = [['Statistic', 'Value']]
         for key, value in stats.items():
-            table_data.append([key.replace('_', ' ').title(), str(value)])
+            table_data.append([key.replace('_', ' ').title(), str(value) if value is not None else '0'])
         table = Table(table_data)
         table.setStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
@@ -844,22 +1046,26 @@ def download_dashboard_pdf():
         elements.append(table)
         elements.append(Spacer(1, 12))
 
-        # Add charts if available
         if chart_bar:
-            elements.append(Paragraph("Bar Chart", styles['Heading2']))
-            elements.append(Spacer(1, 6))
-            # Placeholder for bar chart image
-            elements.append(Paragraph("Bar Chart Image Placeholder", styles['BodyText']))
-            elements.append(Spacer(1, 12))
+            try:
+                bar_img_buffer = io.BytesIO(base64.b64decode(chart_bar))
+                elements.append(Paragraph("Bar Chart", styles['Heading2']))
+                elements.append(Spacer(1, 6))
+                elements.append(Image(bar_img_buffer, width=500, height=300))
+                elements.append(Spacer(1, 12))
+            except Exception as e:
+                logger.warning(f"Failed to decode bar chart for doc_id {doc_id}: {str(e)}")
 
         if chart_pie:
-            elements.append(Paragraph("Pie Chart", styles['Heading2']))
-            elements.append(Spacer(1, 6))
-            # Placeholder for pie chart image
-            elements.append(Paragraph("Pie Chart Image Placeholder", styles['BodyText']))
-            elements.append(Spacer(1, 12))
+            try:
+                pie_img_buffer = io.BytesIO(base64.b64decode(chart_pie))
+                elements.append(Paragraph("Pie Chart", styles['Heading2']))
+                elements.append(Spacer(1, 6))
+                elements.append(Image(pie_img_buffer, width=500, height=300))
+                elements.append(Spacer(1, 12))
+            except Exception as e:
+                logger.warning(f"Failed to decode pie chart for doc_id {doc_id}: {str(e)}")
 
-        # Build the PDF
         doc.build(elements)
         pdf_buffer.seek(0)
 
@@ -882,4 +1088,4 @@ def download_dashboard_pdf():
         return response
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5003)  # Changed to port 5003 to match your frontend's target
+    app.run(debug=True, host='0.0.0.0', port=5003)
