@@ -1,90 +1,46 @@
 import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:async';
+
 import 'package:airport_auhtority_linkage_app/config/config.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:file_picker/file_picker.dart';
-import 'package:logger/logger.dart';
 import 'package:airport_auhtority_linkage_app/models/analysis_data.dart' as model;
-import 'package:intl/intl.dart'; // For IST formatting
-import 'dart:async'; // For retry logic
-import 'dart:typed_data'; // For Uint8List
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:logger/logger.dart';
+import 'package:intl/intl.dart';
 
 class AnalysisService {
   final Logger logger = Logger();
-  static final DateTime _currentDate = DateTime(2025, 10, 26, 22, 13, 0, 0, 19800); // 10:13 PM IST, October 26, 2025
 
-  // Date parsing aligned with Flask backend's parse_excel_serial_date
-  DateTime? _parseExcelSerialDate(dynamic serialNum, String? hhmmStr, String fieldName) {
-    if (serialNum == null || serialNum is! num || serialNum < 0 || serialNum > 1e6) {
-      logger.w('Invalid serial number for $fieldName: $serialNum at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return null;
-    }
-    try {
-      final baseDate = DateTime(1899, 12, 30);
-      final date = baseDate.add(Duration(days: serialNum.toInt()));
-      if (hhmmStr != null && hhmmStr.isNotEmpty) {
-        final hhmmNormalized = hhmmStr.replaceAll(':', '').replaceAll(RegExp(r'[^0-9]'), '');
-        if (hhmmNormalized.length == 4 && int.tryParse(hhmmNormalized) != null) {
-          final hours = int.parse(hhmmNormalized.substring(0, 2));
-          final minutes = int.parse(hhmmNormalized.substring(2, 4));
-          if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-            return date.add(Duration(hours: hours, minutes: minutes)).toUtc();
-          } else {
-            logger.w('Invalid HHMM for $fieldName: $hhmmStr, using 00:00 at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-            return date.toUtc();
-          }
-        } else {
-          logger.w('Non-numeric or invalid HHMM for $fieldName: $hhmmStr, using 00:00 at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-          return date.toUtc();
-        }
-      }
-      return date.toUtc();
-    } catch (e) {
-      logger.w('Error parsing serial date for $fieldName: $serialNum with HHMM $hhmmStr, error: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return null;
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Date parser helper (removed — unused in current codebase)
+  // ---------------------------------------------------------------------------
 
-  // Retry logic for network requests with fresh request creation
+  // ---------------------------------------------------------------------------
+  // Retry logic for all requests
+  // ---------------------------------------------------------------------------
   Future<T> _retryRequest<T>(Future<T> Function() request, int maxAttempts) async {
-    const retryDelay = Duration(seconds: 2);
+    const delay = Duration(seconds: 2);
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         return await request();
       } catch (e) {
         if (attempt == maxAttempts) rethrow;
-        logger.w('Retry attempt $attempt failed: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}, retrying in ${retryDelay * attempt}');
-        await Future.delayed(retryDelay * attempt);
+        logger.w('Attempt $attempt failed: $e — retrying...');
+        await Future.delayed(delay * attempt);
       }
     }
     throw Exception('Max retry attempts reached');
   }
 
-  /// Uploads departure files to generate a doc_id.
+  // ---------------------------------------------------------------------------
+  // 1️⃣ Upload departure files to backend (/upload)
+  // ---------------------------------------------------------------------------
   Future<Map<String, dynamic>> uploadFiles(List<PlatformFile> files) async {
-    if (files.isEmpty) {
-      logger.e('No files selected for upload at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('Please select at least one departure file.');
-    }
+    if (files.isEmpty) throw Exception('Please select at least one departure file.');
 
-    // Validate all files
-    List<String> fileNames = [];
-    for (final file in files) {
-      if (file.size > 50 * 1024 * 1024) {
-        logger.e('File size exceeds 50MB limit for ${file.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('File ${file.name} size exceeds 50MB limit.');
-      }
-      if (file.bytes == null && file.path == null) {
-        logger.e('Invalid file format or data for ${file.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Invalid file format or data for ${file.name}.');
-      }
-      fileNames.add(file.name);
-    }
-
-    logger.d('Uploading ${files.length} file(s): ${fileNames.join(', ')} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-
-    final uri = Uri.parse('${AppConfig.baseURL}/upload');
+    final uri = Uri.parse('${AppConfig.uploadURL}');
     return await _retryRequest(() async {
       final request = http.MultipartRequest('POST', uri);
 
@@ -104,275 +60,140 @@ class AnalysisService {
         }
       }
 
-      // Increase timeout for potentially multiple/large files
       final response = await request.send().timeout(const Duration(seconds: 120));
-      final responseBody = await response.stream.bytesToString();
-      final responseData = jsonDecode(responseBody) as Map<String, dynamic>? ?? {};
+      final body = await response.stream.bytesToString();
+      final data = jsonDecode(body) as Map<String, dynamic>? ?? {};
 
-      if (response.statusCode != 200 || !(responseData['success'] as bool? ?? false)) {
-        logger.e('Upload failed: ${responseData['error'] ?? 'Unknown error'}, Status: ${response.statusCode}, Response: $responseBody at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Upload failed: ${responseData['error'] ?? 'Unknown error'}');
+      if (response.statusCode != 200 || !(data['success'] ?? false)) {
+        throw Exception('Upload failed: ${data['error'] ?? 'Unknown error'}');
       }
 
-      final docId = responseData['doc_id'] as String?;
-      final sheets = responseData['sheets'] as Map<String, dynamic>? ?? {};
-      if (docId == null) {
-        logger.e('No doc_id returned from server for batch upload at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('No doc_id returned from server');
-      }
+      final docId = data['doc_id'] as String?;
+      if (docId == null) throw Exception('No doc_id returned from backend.');
+      logger.i('✅ Upload successful – Doc ID: $docId');
 
-      logger.d('Upload completed with doc_id: $docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return {'docId': docId, 'sheets': sheets};
+      return {'docId': docId, 'sheets': data['sheets'] ?? {}};
     }, 3);
   }
 
-  /// Analyzes a base file and returns analysis data with doc_id.
+  // ---------------------------------------------------------------------------
+  // 2️⃣ Analyze base file (/analyze)
+  // ---------------------------------------------------------------------------
   Future<Map<String, dynamic>> analyzeData(PlatformFile baseFile) async {
-    if (baseFile.size > 50 * 1024 * 1024) {
-      logger.e('File size exceeds 50MB limit for ${baseFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('Base file size exceeds 50MB limit.');
+    if (baseFile.bytes == null && baseFile.path == null) {
+      throw Exception('Invalid base file format.');
     }
 
-    logger.d('Analyzing file: ${baseFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-
-    final uri = Uri.parse('${AppConfig.baseURL}/analyze');
+    final uri = Uri.parse('${AppConfig.analyzeURL}');
     return await _retryRequest(() async {
       final request = http.MultipartRequest('POST', uri);
-
       if (baseFile.bytes != null) {
-        request.files.add(http.MultipartFile.fromBytes(
-          'base_file',
-          baseFile.bytes!,
-          filename: baseFile.name,
-        ));
-      } else if (baseFile.path != null) {
-        request.files.add(await http.MultipartFile.fromPath(
-          'base_file',
-          baseFile.path!,
-          filename: baseFile.name,
-        ));
+        request.files.add(http.MultipartFile.fromBytes('base_file', baseFile.bytes!, filename: baseFile.name));
       } else {
-        logger.e('Invalid base file format or data for ${baseFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Invalid base file format or data.');
+        request.files.add(await http.MultipartFile.fromPath('base_file', baseFile.path!, filename: baseFile.name));
       }
 
-      final response = await request.send().timeout(const Duration(seconds: 60));
-      final responseBody = await response.stream.bytesToString();
-      final responseData = jsonDecode(responseBody) as Map<String, dynamic>? ?? {};
+      final response = await request.send().timeout(const Duration(seconds: 90));
+      final body = await response.stream.bytesToString();
+      final data = jsonDecode(body) as Map<String, dynamic>? ?? {};
 
-      if (response.statusCode != 200 || !(responseData['success'] as bool? ?? false)) {
-        logger.e('Analysis failed: ${responseData['error'] ?? 'Unknown error'}, Status: ${response.statusCode}, Response: $responseBody at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Analysis failed: ${responseData['error'] ?? 'Unknown error (Check Customer_Name in row 1)'}');
+      if (response.statusCode != 200 || !(data['success'] ?? false)) {
+        throw Exception('Analysis failed: ${data['error'] ?? 'Unknown error'}');
       }
 
-      var docId = responseData['doc_id'] as String?;
-      final sheets = responseData['sheets'] as Map<String, dynamic>? ?? {};
-      final analysisResult = <String, model.AnalysisData>{};
+      final docId = data['doc_id'] ?? 'temp_${DateTime.now().millisecondsSinceEpoch}';
+      logger.i('✅ Analysis complete – Doc ID: $docId');
+
+      final sheets = data['sheets'] as Map<String, dynamic>? ?? {};
+      final parsedSheets = <String, model.AnalysisData>{};
       for (var entry in sheets.entries) {
-        try {
-          analysisResult[entry.key] = model.AnalysisData.fromJson(entry.value as Map<String, dynamic>);
-        } catch (e) {
-          logger.w('Failed to parse sheet ${entry.key}: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}, using empty data');
-          analysisResult[entry.key] = model.AnalysisData.empty();
-        }
+        parsedSheets[entry.key] = model.AnalysisData.fromJson(entry.value);
       }
 
-      for (var sheet in analysisResult.values) {
-        for (var row in sheet.rows) {
-          final arrDate = row['Arr_Date'] as dynamic;
-          final depDate = row['Dep_Date'] as dynamic;
-          final arrGmt = _parseExcelSerialDate(arrDate, row['Arr_GMT'] as String?, 'Arr_GMT');
-          final depGmt = _parseExcelSerialDate(depDate, row['Dep_GMT'] as String?, 'Dep_GMT');
-          if (arrGmt != null && depGmt != null) {
-            final difference = depGmt.difference(arrGmt).abs();
-            row['Airtime_Hours'] = '${(difference.inMinutes / 60.0).toStringAsFixed(2)} hours';
-          } else {
-            row['Airtime_Hours'] = 'N/A';
-          }
-
-          row['Arr_Bill_Status'] = (row['Arr_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No';
-          row['Dep_Bill_Status'] = (row['Dep_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No';
-          row['UDF_Bill_Status'] = (row['UDF_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No';
-
-          row['Landing'] = '₹${(double.tryParse(row['Landing']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}';
-          row['UDF_Charge'] = '₹${(double.tryParse(row['UDF_Charge']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}';
-        }
-      }
-
-      if (docId == null) {
-        logger.w('No doc_id returned from analyzeData, generating temporary ID for ${baseFile.name} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        docId = 'temp_${_currentDate.millisecondsSinceEpoch}';
-      }
-
-      logger.d('Analysis completed with doc_id: $docId for ${analysisResult.length} sheets at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return {'docId': docId, 'analysisResult': analysisResult};
+      return {'docId': docId, 'analysisResult': parsedSheets};
     }, 3);
   }
 
-  /// Downloads a PDF dashboard for the given doc_id with improved error handling.
+  // ---------------------------------------------------------------------------
+  // 3️⃣ Download PDF (/download_dashboard_pdf)
+  // ---------------------------------------------------------------------------
   Future<Uint8List> downloadPDF(String docId) async {
-    if (docId.isEmpty) {
-      logger.e('No doc_id provided for PDF download at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('No document ID available for PDF download.');
-    }
+    if (docId.isEmpty) throw Exception('Invalid doc_id.');
+    final uri = Uri.parse('${AppConfig.generatePdfURL}?doc_id=$docId');
 
-    try {
-      final uri = Uri.parse('${AppConfig.baseURL}/download_dashboard_pdf?doc_id=$docId');
-      final response = await _retryRequest(() => http.get(uri).timeout(const Duration(seconds: 60)), 3);
+    return await _retryRequest(() async {
+      final response = await http.get(uri).timeout(const Duration(seconds: 60));
 
       if (response.statusCode != 200) {
-        logger.e('PDF download failed: Status ${response.statusCode}, Body: ${response.body} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        final errorDetails = jsonDecode(response.body) as Map<String, dynamic>? ?? {};
-        if (response.statusCode == 500 && errorDetails['details']?.contains('pdflatex') == true) {
-          const logPath = '/var/log/miktex/pdflatex.log'; // Updated to a more generic server log path
-          logger.e('PDF generation failed: Server-side LaTeX error. Check log at $logPath on the server or contact support.');
-          throw Exception('PDF generation failed: Server-side LaTeX error. Check log at $logPath or contact support.');
-        }
-        throw Exception('PDF download failed: Status ${response.statusCode}, ${errorDetails['error'] ?? response.body}');
+        throw Exception('Failed to download PDF (${response.statusCode}): ${response.body}');
       }
-
       if (response.bodyBytes.isEmpty) {
-        logger.e('Empty PDF data received for docId: $docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('No PDF data available for this document.');
+        throw Exception('Received empty PDF data.');
       }
 
-      logger.d('PDF downloaded successfully for docId: $docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
+      logger.i('✅ PDF downloaded successfully for $docId');
       return response.bodyBytes;
-    } catch (e, stackTrace) {
-      logger.e('Error downloading PDF: $e, StackTrace: $stackTrace at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('PDF download failed: ${e.toString()}');
-    }
+    }, 3);
   }
 
-  /// Fetches pre-analyzed registration data per day for a given doc_id.
+  // ---------------------------------------------------------------------------
+  // 4️⃣ Fetch analysis summary (/search)
+  // ---------------------------------------------------------------------------
   Future<Map<String, Map<String, int>>> fetchAnalysisData(String docId) async {
-    if (docId.isEmpty) {
-      logger.e('No doc_id provided for fetching analysis data at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('No document ID available. Please upload a file first.');
-    }
+    if (docId.isEmpty) throw Exception('Invalid doc_id.');
+    final uri = Uri.parse('${AppConfig.searchURL}?doc_id=$docId');
 
-    logger.d('Fetching analysis data for docId: $docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-
-    final uri = Uri.parse('${AppConfig.baseURL}/search?doc_id=$docId');
     final response = await _retryRequest(() => http.get(uri).timeout(const Duration(seconds: 60)), 3);
+    if (response.statusCode != 200) throw Exception('Fetch failed: ${response.body}');
 
-    try {
-      if (response.statusCode != 200) {
-        logger.e('Fetch failed: Status ${response.statusCode}, Body: ${response.body} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Failed to fetch analysis data: Status ${response.statusCode}, ${response.body}');
-      }
-
-      final responseData = jsonDecode(response.body) as List<dynamic>? ?? [];
-      final registrationsPerDay = <String, Map<String, int>>{};
-      for (var item in responseData) {
-        final regNo = item['Reg_No'] as String? ?? 'N/A';
-        final date = item['Arr_Date'] as String? ?? 'N/A';
-        final count = item['Count'] as int? ?? 0;
-        registrationsPerDay.putIfAbsent(regNo, () => {})[date] = count;
-      }
-
-      logger.d('Fetched registration data for ${registrationsPerDay.length} aircraft at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return registrationsPerDay;
-    } catch (e, stackTrace) {
-      logger.e('Error fetching analysis data: $e, StackTrace: $stackTrace at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('Failed to fetch analysis data: ${e.toString()}');
+    final List<dynamic> data = jsonDecode(response.body);
+    final result = <String, Map<String, int>>{};
+    for (var entry in data) {
+      final regNo = entry['Reg_No'] ?? 'N/A';
+      final date = entry['Arr_Date'] ?? 'N/A';
+      final count = entry['Count'] ?? 0;
+      result.putIfAbsent(regNo, () => {})[date] = count;
     }
+
+    logger.i('✅ Analysis data fetched for ${result.length} aircrafts');
+    return result;
   }
 
-  /// Fetches aggregated statistics for a given doc_id, grouped by operator or region.
+  // ---------------------------------------------------------------------------
+  // 5️⃣ Fetch aggregated stats (/stats)
+  // ---------------------------------------------------------------------------
   Future<List<Map<String, dynamic>>> fetchStatsData(String docId, String groupBy) async {
-    if (docId.isEmpty) {
-      logger.e('No doc_id provided for fetching stats data at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('No document ID available. Please upload a file first.');
-    }
+    if (docId.isEmpty) throw Exception('Invalid doc_id.');
 
-    logger.d('Fetching stats data for docId: $docId, groupBy: $groupBy at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-
-    final uri = Uri.parse('${AppConfig.baseURL}/stats')
-        .replace(queryParameters: {'doc_id': docId, 'group_by': groupBy});
+    final uri = Uri.parse('${AppConfig.statsURL}?doc_id=$docId&group_by=$groupBy');
     final response = await _retryRequest(() => http.get(uri).timeout(const Duration(seconds: 60)), 3);
+    if (response.statusCode != 200) throw Exception('Failed to fetch stats: ${response.body}');
 
-    try {
-      if (response.statusCode != 200) {
-        logger.e('Stats fetch failed: Status ${response.statusCode}, Body: ${response.body} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Failed to fetch stats: Status ${response.statusCode}, ${response.body}');
-      }
+    final List<dynamic> data = jsonDecode(response.body);
+    final stats = data.map((e) => {
+          'Group_Name': e['Operator_Name'] ?? e['Region'] ?? 'N/A',
+          'Flight_Count': e['Flight_Count'] ?? 0,
+          'Avg_Airtime_Hours': e['Avg_Airtime_Hours'] ?? '0.0',
+          'Region': e['Region'] ?? 'N/A',
+        }).toList();
 
-      final responseData = jsonDecode(response.body) as List<dynamic>? ?? [];
-      final stats = responseData.map((item) {
-        final groupName = item['Operator_Name'] ?? (groupBy == 'region' ? item['Region'] : 'N/A');
-        return {
-          'Group_Name': groupName,
-          'Customer_Name': item['Customer_Name'] ?? 'N/A',
-          'Flight_Count': int.tryParse(item['Flight_Count']?.toString() ?? '0') ?? 0,
-          'Avg_Airtime_Hours': double.tryParse(item['Avg_Airtime_Hours']?.toString() ?? '0.0')?.toStringAsFixed(2) ?? '0.0',
-          'Same_Linkage_Count': int.tryParse(item['Same_Linkage_Count']?.toString() ?? '0') ?? 0,
-          'Different_Linkage_Count': int.tryParse(item['Different_Linkage_Count']?.toString() ?? '0') ?? 0,
-          'Arr_Billed_Count': int.tryParse(item['Arr_Billed_Count']?.toString() ?? '0') ?? 0,
-          'Arr_UnBilled_Count': int.tryParse(item['Arr_UnBilled_Count']?.toString() ?? '0') ?? 0,
-          'Dep_Billed_Count': int.tryParse(item['Dep_Billed_Count']?.toString() ?? '0') ?? 0,
-          'Dep_UnBilled_Count': int.tryParse(item['Dep_UnBilled_Count']?.toString() ?? '0') ?? 0,
-          'UDF_Billed_Count': int.tryParse(item['UDF_Billed_Count']?.toString() ?? '0') ?? 0,
-          'UDF_UnBilled_Count': int.tryParse(item['UDF_UnBilled_Count']?.toString() ?? '0') ?? 0,
-          'Total_Landing_Charges': '₹${(double.tryParse(item['Total_Landing_Charges']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}',
-          'Total_UDF_Charges': '₹${(double.tryParse(item['Total_UDF_Charges']?.toString().replaceAll('₹', '') ?? '0.0') ?? 0.0).toStringAsFixed(2)}',
-          'Region': item['Region'] ?? 'N/A',
-        };
-      }).toList();
-
-      logger.d('Fetched stats data for ${stats.length} entries at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return stats;
-    } catch (e, stackTrace) {
-      logger.e('Error fetching stats data: $e, StackTrace: $stackTrace at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('Failed to fetch stats data: ${e.toString()}');
-    }
+    logger.i('✅ Stats fetched for ${stats.length} entries');
+    return stats;
   }
 
-  /// Searches flights with filters for a given doc_id with pagination.
+  // ---------------------------------------------------------------------------
+  // 6️⃣ Search flights with filters (/search)
+  // ---------------------------------------------------------------------------
   Future<List<Map<String, dynamic>>> searchFlights(String docId, Map<String, String> queryParams) async {
-    if (docId.isEmpty) {
-      logger.e('No doc_id provided for search at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('No document ID available. Please upload a file first.');
-    }
+    if (docId.isEmpty) throw Exception('Invalid doc_id.');
 
-    final page = int.tryParse(queryParams['page'] ?? '0') ?? 0;
-    final limit = int.tryParse(queryParams['limit'] ?? '100') ?? 100;
-    logger.d('Searching flights for docId: $docId, page: $page, limit: $limit, params: ${queryParams['query']} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-
-    final uri = Uri.parse('${AppConfig.baseURL}/search')
-        .replace(queryParameters: {'doc_id': docId, 'page': page.toString(), 'limit': limit.toString(), ...queryParams});
+    final uri = Uri.parse(AppConfig.searchURL).replace(queryParameters: {'doc_id': docId, ...queryParams});
     final response = await _retryRequest(() => http.get(uri).timeout(const Duration(seconds: 60)), 3);
 
-    try {
-      if (response.statusCode != 200) {
-        logger.e('Search failed: Status ${response.statusCode}, Body: ${response.body} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        throw Exception('Failed to search flights: Status ${response.statusCode}, ${response.body}');
-      }
+    if (response.statusCode != 200) throw Exception('Search failed: ${response.body}');
+    final List<dynamic> data = jsonDecode(response.body);
 
-      final responseData = jsonDecode(response.body) as List<dynamic>? ?? [];
-      final results = responseData.map((item) {
-        return {
-          'Reg No': item['Reg_No'] as String? ?? 'N/A',
-          'Date': item['Arr_Date'] as String? ?? 'N/A',
-          'Count': item['Count']?.toString() ?? '1',
-          'Unique Id': item['Unique_Id'] as String? ?? 'N/A',
-          'Operator Name': item['Operator_Name'] as String? ?? 'N/A',
-          'Aircraft Type': item['Aircraft_Type'] as String? ?? 'N/A',
-          'Airtime Hours': item['Airtime_Hours'] as String? ?? 'N/A',
-          'Linkage Status': item['Linkage_Status'] as String? ?? 'N/A',
-          'Arr Bill Status': item['Arr_Bill_Status'] as String? ?? 'N/A',
-          'Dep Bill Status': item['Dep_Bill_Status'] as String? ?? 'N/A',
-          'UDF Bill Status': item['UDF_Bill_Status'] as String? ?? 'N/A',
-          'Landing': item['Landing'] as String? ?? '₹0.00',
-          'UDF Charge': item['UDF_Charge'] as String? ?? '₹0.00',
-        };
-      }).toList();
-
-      logger.d('Fetched ${results.length} search results at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      return results;
-    } catch (e, stackTrace) {
-      logger.e('Error searching flights: $e, StackTrace: $stackTrace at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-      throw Exception('Failed to search flights: ${e.toString()}');
-    }
+    logger.i('✅ Search returned ${data.length} results');
+    return List<Map<String, dynamic>>.from(data);
   }
 }

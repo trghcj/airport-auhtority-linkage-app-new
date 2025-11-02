@@ -13,7 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:universal_html/html.dart' as html;
 
 class AnalysisPage extends StatefulWidget {
-  final Map<String, AnalysisData>? initialAnalysisResult; // Receive pre-analyzed data
+  final Map<String, AnalysisData>? initialAnalysisResult;
 
   const AnalysisPage({super.key, this.initialAnalysisResult});
 
@@ -28,7 +28,7 @@ class _AnalysisPageState extends State<AnalysisPage> {
   String? _status;
   Map<String, AnalysisData>? _analysisResult;
   String? _selectedSheet;
-  String? _docId; // Store docId from initialAnalysisResult
+  String? _docId;
 
   @override
   void initState() {
@@ -39,125 +39,82 @@ class _AnalysisPageState extends State<AnalysisPage> {
   void _initializeData() {
     if (widget.initialAnalysisResult != null && widget.initialAnalysisResult!.isNotEmpty) {
       setState(() {
-        _analysisResult = Map.from(widget.initialAnalysisResult!); // Create a copy to avoid mutation
-        _selectedSheet = _analysisResult!.keys.firstWhere(
-          (k) => _analysisResult![k] != null,
-          orElse: () => _analysisResult!.keys.first,
-        );
-        _docId = _analysisResult!.values
-            .firstWhere((v) => v.docId.isNotEmpty, orElse: () => AnalysisData.empty())
-            .docId;
-        _status = _docId!.isNotEmpty
-            ? '✅ Analysis data received with Doc ID: $_docId'
-            : '✅ Analysis data received from previous upload (no Doc ID).';
-        _logger.d(
-            'Initialized with analysis result: $_analysisResult, docId: $_docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
+        _analysisResult = Map.from(widget.initialAnalysisResult!);
+        _selectedSheet = _analysisResult!.keys.first;
+        _docId = _analysisResult!.values.first.docId;
+        _status = _docId != null && _docId!.isNotEmpty
+            ? '✅ Analysis loaded (Doc ID: $_docId)'
+            : '✅ Loaded previous analysis data.';
       });
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant AnalysisPage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.initialAnalysisResult != oldWidget.initialAnalysisResult) {
-      _initializeData();
+      _logger.i("Initialized with docId: $_docId and ${_analysisResult!.length} sheets.");
     }
   }
 
   Future<void> _uploadAndAnalyzeFile() async {
     setState(() {
       _isLoading = true;
-      _status = 'Starting analysis...';
-      _analysisResult = null;
-      _selectedSheet = null;
-      _docId = null;
+      _status = 'Uploading and analyzing...';
     });
 
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final picked = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls'],
         withData: kIsWeb,
-        allowMultiple: false,
       );
 
-      if (result == null || result.files.isEmpty) {
-        setState(() {
-          _status = '⚠️ Please select a base data file.';
-          _isLoading = false;
-        });
-        _showSnackBar('No file selected. Please try again.');
+      if (picked == null || picked.files.isEmpty) {
+        _setStatus('⚠️ No file selected.');
         return;
       }
 
-      final file = result.files.first;
+      final file = picked.files.first;
       if (file.size > 50 * 1024 * 1024) {
-        setState(() {
-          _status = '❌ File size exceeds 50MB limit.';
-          _isLoading = false;
-        });
-        _showSnackBar('File size exceeds 50MB limit.');
+        _setStatus('❌ File too large (>50MB).');
         return;
       }
 
-      final analysisResponse = await _analysisService.analyzeData(file);
+      final result = await _analysisService.analyzeData(file);
       if (!mounted) return;
 
-      final analysisResult = (analysisResponse['analysisResult'] as Map<String, dynamic>).cast<String, AnalysisData>();
-      if (analysisResult.isEmpty) {
-        throw Exception('No analysis data returned from server');
-      }
+      final analysisData =
+          (result['analysisResult'] as Map<String, dynamic>).cast<String, AnalysisData>();
+      final docId = result['docId'] as String? ?? '';
 
       setState(() {
         _isLoading = false;
-        _analysisResult = analysisResult;
-        _selectedSheet = _analysisResult!.keys.firstWhere(
-          (k) => _analysisResult![k] != null,
-          orElse: () => _analysisResult!.keys.first,
-        );
-        _docId = analysisResponse['docId'] as String? ?? '';
-        _status = _docId!.isNotEmpty
-            ? '✅ Analysis complete for ${_analysisResult!.keys.length} sheet(s) with Doc ID: $_docId'
-            : '✅ Analysis complete for ${_analysisResult!.keys.length} sheet(s) (no Doc ID).';
-        _logger.d(
-            'Analysis result: $_analysisResult, docId: $_docId at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
+        _analysisResult = analysisData;
+        _docId = docId;
+        _selectedSheet = _analysisResult!.keys.first;
+        _status =
+            '✅ Analysis complete (${_analysisResult!.length} sheets). ${_docId!.isNotEmpty ? "Doc ID: $_docId" : ""}';
       });
-      _showSnackBar('Analysis completed successfully.');
-    } catch (e, stackTrace) {
-      if (mounted) {
-        _logger.e(
-            'Error analyzing file: $e\nStackTrace: $stackTrace at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-        setState(() {
-          _status = '❌ Analysis failed: ${e.toString().contains("Network error") ? "Check your internet connection and try again." : e.toString().contains("Customer_Name") ? "Check base file has 'Customer_Name' column or try again." : e.toString()}';
-          _isLoading = false;
-        });
-        _showSnackBar('Analysis failed: ${e.toString().contains("Network error") ? "Check your internet connection." : e.toString()}');
-      }
+      _showSnackBar('Analysis complete!');
+    } catch (e, stack) {
+      _logger.e("Error analyzing: $e\n$stack");
+      _setStatus('❌ Analysis failed: ${e.toString().split(":").last}');
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
   Future<void> _downloadPDF(String sheetName) async {
     if (_docId == null || _docId!.isEmpty) {
-      setState(() {
-        _status = '⚠️ No document ID available. Upload via UploadPage first to generate a PDF.';
-        _isLoading = false;
-      });
-      _showSnackBar('No document ID available for PDF download.');
+      _setStatus('⚠️ No document ID. Please upload first.');
       return;
     }
 
     setState(() {
       _isLoading = true;
-      _status = 'Downloading PDF for sheet: $sheetName...';
+      _status = 'Downloading PDF...';
     });
 
     try {
       final pdfData = await _analysisService.downloadPDF(_docId!);
-      if (pdfData.isEmpty) {
-        throw Exception('Empty PDF data received');
-      }
+      if (pdfData.isEmpty) throw Exception("No PDF data received.");
 
       final fileName = 'analysis_${sheetName.replaceAll(' ', '_')}_${_docId!}.pdf';
+
       if (kIsWeb) {
         final blob = html.Blob([pdfData]);
         final url = html.Url.createObjectUrlFromBlob(blob);
@@ -170,46 +127,41 @@ class _AnalysisPageState extends State<AnalysisPage> {
         final file = File('${dir.path}/$fileName');
         await file.writeAsBytes(pdfData, flush: true);
 
-        if (!mounted) return;
-
         if (Platform.isAndroid || Platform.isIOS) {
           final result = await OpenFile.open(file.path);
           if (result.type != ResultType.done) {
-            _showSnackBar('Failed to open PDF. Check file permissions.');
+            _showSnackBar('⚠️ Could not open file.');
           }
         }
       }
 
-      setState(() {
-        _isLoading = false;
-        _status = '✅ PDF downloaded successfully for $sheetName';
-      });
-      _logger.d(
-          'PDF downloaded: $fileName at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-      _showSnackBar('PDF downloaded successfully.');
-    } catch (e, stackTrace) {
-      if (mounted) {
-        _logger.e(
-            'Error downloading PDF: $e\nStackTrace: $stackTrace at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-        setState(() {
-          _isLoading = false;
-          _status = '❌ PDF download failed: ${e.toString().contains('Empty PDF data') ? 'No data available for this document.' : e.toString().contains("Network error") ? "Check your internet connection and try again." : e.toString()}';
-        });
-        _showSnackBar('PDF download failed: ${e.toString().contains("Network error") ? "Check your internet connection." : e.toString()}');
-      }
+      _setStatus('✅ PDF downloaded for $sheetName');
+    } catch (e, stack) {
+      _logger.e('PDF download error: $e\n$stack');
+      _setStatus('❌ PDF download failed: ${e.toString().split(":").last}');
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
+  // -------------------------------------------------------------
+  // Helpers
+  // -------------------------------------------------------------
   void _showSnackBar(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          duration: const Duration(seconds: 3),
-          backgroundColor: _status != null && _status!.startsWith('❌') ? Colors.red[100] : null,
-        ),
-      );
-    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  void _setStatus(String msg) {
+    if (!mounted) return;
+    setState(() {
+      _status = msg;
+      _isLoading = false;
+    });
+    _showSnackBar(msg);
   }
 
   Color? _getStatusColor() {
@@ -220,250 +172,47 @@ class _AnalysisPageState extends State<AnalysisPage> {
     return null;
   }
 
-  Color _getAirtimeColor(String? hours) {
-    if (hours == null || hours == 'N/A') return Colors.grey;
-    try {
-      final doubleHours = double.parse(hours.split(' ').first);
-      if (doubleHours < 10) return Colors.red;
-      if (doubleHours < 14) return Colors.yellow;
-      return Colors.green;
-    } catch (e) {
-      _logger.w('Error parsing airtime: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-      return Colors.grey;
-    }
-  }
-
-  Color _getBillStatusColor(String? status) {
-    if (status == null) return Colors.grey;
-    return status.toLowerCase() == 'yes' ? Colors.green : Colors.red;
-  }
-
-  DateTime? _parseDate(String? dateStr, String? hhmmStr, String fieldName) {
-    if (dateStr == null || dateStr.isEmpty || dateStr == 'N/A') {
-      _logger.w('Invalid date format for $fieldName: $dateStr at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-      return null;
-    }
-    try {
-      // Try parsing as ISO string first
-      DateTime? parsedDate = DateTime.tryParse(dateStr);
-      if (parsedDate != null) {
-        return _applyHHMM(parsedDate, hhmmStr);
-      }
-      // Try parsing as Excel serial number
-      final serialNum = double.tryParse(dateStr);
-      if (serialNum != null && serialNum >= 0 && serialNum <= 1e6) {
-        final baseDate = DateTime(1899, 12, 30);
-        final date = baseDate.add(Duration(days: serialNum.toInt()));
-        return _applyHHMM(date, hhmmStr);
-      }
-      _logger.w('Invalid date format for $fieldName: $dateStr at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-      return null;
-    } catch (e) {
-      _logger.w('Error parsing date for $fieldName: $dateStr, error: $e at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-      return null;
-    }
-  }
-
-  DateTime? _applyHHMM(DateTime date, String? hhmmStr) {
-    if (hhmmStr != null && hhmmStr.isNotEmpty) {
-      final hhmmNormalized = hhmmStr.replaceAll(':', '').replaceAll(RegExp(r'[^0-9]'), '');
-      if (hhmmNormalized.length == 4 && int.tryParse(hhmmNormalized) != null) {
-        final hours = int.tryParse(hhmmNormalized.substring(0, 2)) ?? 0;
-        final minutes = int.tryParse(hhmmNormalized.substring(2, 4)) ?? 0;
-        if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-          return date.add(Duration(hours: hours, minutes: minutes)).toUtc();
-        } else {
-          _logger.w('Invalid HHMM $hhmmStr, using 00:00 at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-        }
-      } else {
-        _logger.w('Non-numeric or invalid HHMM $hhmmStr, using 00:00 at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-      }
-    }
-    return date.toUtc();
-  }
-
   Widget _buildSheetDashboard(String sheetName) {
-    if (_analysisResult == null || !_analysisResult!.containsKey(sheetName)) {
-      return const Center(
-        child: Text(
-          'No data available for this sheet.',
-          style: TextStyle(fontFamily: 'Roboto', fontSize: 16),
-        ),
-      );
+    final sheet = _analysisResult?[sheetName];
+    if (sheet == null) {
+      return const Center(child: Text('No data available.'));
     }
 
-    final sheetData = _analysisResult![sheetName]!;
-    final columns = sheetData.columns;
-    final rows = sheetData.rows;
-    final stats = sheetData.stats;
-    final formalSummary = sheetData.formalSummary;
-    final chartBarBase64 = sheetData.chartBar;
-    final chartPieBase64 = sheetData.chartPie;
-
-    final processedRows = rows.map((row) {
-      DateTime? arrGmt = _parseDate(row['Arr_Date']?.toString(), row['Arr_GMT'] as String?, 'Arr GMT');
-      DateTime? depGmt = _parseDate(row['Dep_Date']?.toString(), row['Dep_GMT'] as String?, 'Dep GMT');
-      String airtimeHours = 'N/A';
-      if (arrGmt != null && depGmt != null) {
-        Duration difference = depGmt.difference(arrGmt).abs();
-        double hours = difference.inMinutes / 60.0;
-        airtimeHours = '${hours.toStringAsFixed(2)} hours';
-      }
-
-      double landing = (double.tryParse((row['Landing']?.toString() ?? '0.0').replaceAll('₹', '').replaceAll(',', '')) ?? 0.0);
-      double udfCharge = (double.tryParse((row['UDF_Charge']?.toString() ?? '0.0').replaceAll('₹', '').replaceAll(',', '')) ?? 0.0);
-
-      return {
-        ...row,
-        'Airtime_Hours': airtimeHours,
-        'Landing': '₹${landing.toStringAsFixed(2)}',
-        'UDF_Charge': '₹${udfCharge.toStringAsFixed(2)}',
-        'Arr_Bill_Status': (row['Arr_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No',
-        'Dep_Bill_Status': (row['Dep_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No',
-        'UDF_Bill_Status': (row['UDF_Bill_Status']?.toString().toLowerCase() ?? '').contains('billed') ? 'Yes' : 'No',
-      };
-    }).toList();
+    final summary = sheet.formalSummary;
+    final stats = sheet.stats;
+    final chartBar = sheet.chartBar;
+    final chartPie = sheet.chartPie;
+    final rows = sheet.rows.take(10).toList();
 
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
         children: [
-          const Text(
-            'Analysis Dashboard',
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Summary: $formalSummary',
-            style: const TextStyle(
-              fontFamily: 'Roboto',
-              fontSize: 16,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Statistics',
-                    style: TextStyle(
-                      fontFamily: 'Roboto',
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ...stats.entries.map((entry) => Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              '${entry.key.replaceAll('_', ' ').titleCase}:',
-                              style: const TextStyle(
-                                fontFamily: 'Roboto',
-                                fontSize: 14,
-                              ),
-                            ),
-                            Text(
-                              entry.value.toString(),
-                              style: const TextStyle(
-                                fontFamily: 'Roboto',
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          if (chartBarBase64.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16.0),
-              child: Image.memory(base64Decode(chartBarBase64), fit: BoxFit.contain),
-            ),
-          if (chartPieBase64.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16.0),
-              child: Image.memory(base64Decode(chartPieBase64), fit: BoxFit.contain),
-            ),
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.vertical,
-                  child: DataTable(
-                    columnSpacing: 16.0,
-                    dataRowHeight: 48.0,
-                    headingRowHeight: 56.0,
-                    columns: columns.map((col) => DataColumn(
-                          label: Text(
-                            col.replaceAll('_', ' ').titleCase,
-                            style: const TextStyle(
-                              fontFamily: 'Roboto',
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        )).toList(),
-                    rows: processedRows.map((row) {
-                      return DataRow(cells: columns.map((col) {
-                        final value = row[col] ?? 'N/A';
-                        Color? textColor;
-                        if (col == 'Airtime_Hours') {
-                          textColor = _getAirtimeColor(value.toString());
-                        } else if (col.endsWith('Bill_Status')) {
-                          textColor = _getBillStatusColor(value.toString());
-                        }
-                        return DataCell(
-                          Text(
-                            value.toString(),
-                            style: TextStyle(
-                              fontFamily: 'Roboto',
-                              fontSize: 14,
-                              color: textColor,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            maxLines: 1,
-                          ),
-                        );
-                      }).toList());
-                    }).toList(),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _isLoading || _selectedSheet == null || _docId!.isEmpty
-                ? null
-                : () => _downloadPDF(_selectedSheet!),
+          Text("📝 Summary:\n$summary",
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 10),
+          if (chartBar.isNotEmpty)
+            Image.memory(base64Decode(chartBar), height: 180, fit: BoxFit.contain),
+          if (chartPie.isNotEmpty)
+            Image.memory(base64Decode(chartPie), height: 180, fit: BoxFit.contain),
+          const SizedBox(height: 10),
+          const Text("📊 Key Statistics:",
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          ...stats.entries
+              .map((e) => Text("${e.key.replaceAll('_', ' ').toUpperCase()}: ${e.value}")),
+          const Divider(),
+          const Text("📋 Sample Rows:",
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          ...rows.map((r) => Text(r.toString())),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: !_isLoading ? () => _downloadPDF(sheetName) : null,
+            icon: const Icon(Icons.picture_as_pdf, color: Colors.white),
+            label: const Text("Download PDF"),
             style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
-              textStyle: const TextStyle(fontSize: 16, fontFamily: 'Roboto'),
-              minimumSize: const Size(double.infinity, 50),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              backgroundColor: Colors.redAccent,
+              minimumSize: const Size(double.infinity, 48),
             ),
-            child: const Text('Download PDF'),
           ),
         ],
       ),
@@ -476,136 +225,66 @@ class _AnalysisPageState extends State<AnalysisPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Analyze Base Data',
-          style: TextStyle(
-            fontFamily: 'Roboto',
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        elevation: 4,
-        shadowColor: Colors.grey.withOpacity(0.3),
+        title: const Text('Analyze Base Data'),
         actions: [
-          if (_docId != null && _docId!.isNotEmpty && !_isLoading)
+          if (_docId != null && _docId!.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.picture_as_pdf, color: Colors.red),
-              onPressed: _selectedSheet == null ? null : () => _downloadPDF(_selectedSheet!),
-              tooltip: 'Download PDF',
-            ),
+              tooltip: "Download PDF",
+              onPressed: _selectedSheet != null ? () => _downloadPDF(_selectedSheet!) : null,
+            )
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Card(
-                    elevation: 2,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: ElevatedButton.icon(
-                        icon: const Icon(Icons.analytics),
-                        label: const Text(
-                          'Upload Base Data File',
-                          style: TextStyle(
-                            fontFamily: 'Roboto',
-                            fontSize: 16,
-                          ),
-                        ),
-                        onPressed: _uploadAndAnalyzeFile,
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
-                          textStyle: const TextStyle(fontSize: 16),
-                          minimumSize: Size(MediaQuery.of(context).size.width - 32, 50),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                    ),
+                  ElevatedButton.icon(
+                    onPressed: _uploadAndAnalyzeFile,
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text("Upload & Analyze Base File"),
                   ),
-                  if (_status != null) ...[
-                    const SizedBox(height: 16),
+                  if (_status != null)
                     Container(
-                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.only(top: 10),
+                      padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
                         color: _getStatusColor(),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.grey[300]!),
                       ),
-                      child: Text(
-                        _status!,
-                        style: const TextStyle(
-                          fontFamily: 'Roboto',
-                          fontSize: 14,
-                          height: 1.5,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
+                      child: Text(_status!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 14, height: 1.4)),
                     ),
-                  ],
-                  if (_analysisResult != null) ...[
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: DropdownButton<String>(
-                            value: _selectedSheet,
-                            hint: const Text(
-                              'Select a Sheet',
-                              style: TextStyle(
-                                fontFamily: 'Roboto',
-                                fontSize: 14,
-                              ),
-                            ),
-                            isExpanded: true,
-                            items: sheetKeys.map((sheet) {
-                              return DropdownMenuItem<String>(
-                                value: sheet,
-                                child: Text(
-                                  sheet,
-                                  style: const TextStyle(
-                                    fontFamily: 'Roboto',
-                                    fontSize: 14,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              );
-                            }).toList(),
-                            onChanged: (value) {
-                              setState(() => _selectedSheet = value);
-                              _logger.d(
-                                  'Selected sheet: $value at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30)))}');
-                            },
-                          ),
-                        ),
-                      ],
+                  if (_analysisResult != null && _analysisResult!.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    DropdownButton<String>(
+                      value: _selectedSheet,
+                      hint: const Text("Select Sheet"),
+                      isExpanded: true,
+                      items: sheetKeys
+                          .map((k) => DropdownMenuItem(value: k, child: Text(k)))
+                          .toList(),
+                      onChanged: (val) => setState(() => _selectedSheet = val),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 10),
                     if (_selectedSheet != null)
-                      SizedBox(
-                        height: MediaQuery.of(context).size.height * 0.6,
-                        child: SingleChildScrollView(
-                          child: _buildSheetDashboard(_selectedSheet!),
-                        ),
-                      ),
+                      Expanded(child: _buildSheetDashboard(_selectedSheet!)),
                   ],
                 ],
               ),
-            ),
+      ),
     );
   }
 }
 
 extension StringExtension on String {
-  String get titleCase => this
-      .split(' ')
-      .map((word) => word.isNotEmpty ? '${word[0].toUpperCase()}${word.substring(1).toLowerCase()}' : word)
+  String get titleCase => split(' ')
+      .map((word) => word.isNotEmpty
+          ? '${word[0].toUpperCase()}${word.substring(1).toLowerCase()}'
+          : word)
       .join(' ');
 }

@@ -1,11 +1,12 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:airport_auhtority_linkage_app/config/config.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:logger/logger.dart';
-import 'package:url_launcher/url_launcher.dart'; // For opening PDF download
+import 'package:url_launcher/url_launcher.dart';
 
 class AnalysisTestPage extends StatefulWidget {
   const AnalysisTestPage({super.key});
@@ -18,9 +19,12 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
   String? status;
   bool loading = false;
   Map<String, dynamic>? result;
-  String? docId; // Store doc_id from response
+  String? docId;
   final Logger _logger = Logger();
 
+  // ---------------------------------------------------------------------------
+  // Upload & Analyze File
+  // ---------------------------------------------------------------------------
   Future<void> uploadTestFile() async {
     setState(() {
       loading = true;
@@ -30,12 +34,12 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
     });
 
     try {
-      final file = await FilePicker.platform.pickFiles(
-        allowedExtensions: ['xlsx', 'xlsb'],
+      final picked = await FilePicker.platform.pickFiles(
+        allowedExtensions: ['xlsx', 'xls'],
         type: FileType.custom,
       );
 
-      if (file == null || (file.files.first.bytes == null && file.files.first.path == null)) {
+      if (picked == null || (picked.files.first.bytes == null && picked.files.first.path == null)) {
         setState(() {
           status = "⚠️ No file selected.";
           loading = false;
@@ -43,45 +47,41 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
         return;
       }
 
-      final filename = file.files.first.name;
-      final url = Uri.parse(AppConfig.analyzeURL);
+      final file = picked.files.first;
+      final filename = file.name;
+      final request = http.MultipartRequest('POST', Uri.parse(AppConfig.analyzeURL));
 
-      final request = http.MultipartRequest('POST', url);
-      if (kIsWeb || file.files.first.bytes != null) {
-        final fileBytes = file.files.first.bytes!;
+      if (kIsWeb || file.bytes != null) {
         request.files.add(
-          http.MultipartFile.fromBytes('base_file', fileBytes, filename: filename),
+          http.MultipartFile.fromBytes('base_file', file.bytes!, filename: filename),
         );
       } else {
-        final filePath = file.files.first.path!;
-        request.files.add(
-          await http.MultipartFile.fromPath('base_file', filePath, filename: filename),
-        );
+        request.files.add(await http.MultipartFile.fromPath('base_file', file.path!, filename: filename));
       }
 
       final streamedResponse = await request.send().timeout(const Duration(seconds: 300));
       final response = await http.Response.fromStream(streamedResponse);
-      final body = json.decode(response.body);
+      final body = jsonDecode(response.body);
 
       if (!mounted) return;
 
       if (body['success'] == true) {
         setState(() {
           result = body['sheets'];
-          docId = body['doc_id']; // Capture doc_id
-          status = "✅ Analysis complete. Click below to download PDF.";
+          docId = body['doc_id'];
+          status = "✅ Analysis complete. You can download the PDF below.";
         });
+        _logger.i("Analysis completed successfully — docId: $docId");
       } else {
         setState(() {
           status = "❌ Error: ${body['error'] ?? 'Unknown error'}";
         });
+        _logger.e("Analysis error: ${body['error']}");
       }
     } catch (e, stackTrace) {
+      _logger.e('Error: $e\nStackTrace: $stackTrace');
       if (mounted) {
-        _logger.e('Error: $e\nStackTrace: $stackTrace');
-        setState(() {
-          status = "❌ Exception: $e";
-        });
+        setState(() => status = "❌ Exception: $e");
       }
     } finally {
       if (mounted) {
@@ -90,23 +90,33 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Download generated PDF dashboard
+  // ---------------------------------------------------------------------------
   Future<void> downloadPdf() async {
-    if (docId == null) {
+    if (docId == null || docId!.isEmpty) {
       setState(() => status = "⚠️ No document ID available. Please analyze a file first.");
       return;
     }
-    final pdfUrl = Uri.parse('${AppConfig.baseURL}/download_dashboard/$docId');
+
+    final pdfUrl = Uri.parse('${AppConfig.generatePdfURL}?doc_id=$docId');
+    _logger.i("Attempting to open PDF URL: $pdfUrl");
+
     if (await canLaunchUrl(pdfUrl)) {
       await launchUrl(pdfUrl, mode: LaunchMode.externalApplication);
+      setState(() => status = "📄 PDF download initiated.");
     } else {
-      setState(() => status = "❌ Failed to launch PDF download.");
+      setState(() => status = "❌ Failed to launch PDF link.");
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Test Excel Analysis')),
+      appBar: AppBar(title: const Text('📊 Test Excel Analysis')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -114,18 +124,22 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
             ElevatedButton.icon(
               onPressed: loading ? null : uploadTestFile,
               icon: const Icon(Icons.upload_file),
-              label: const Text("Pick and Analyze Excel"),
+              label: const Text("Pick & Analyze Excel"),
               style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
               ),
             ),
             if (docId != null)
-              ElevatedButton.icon(
-                onPressed: loading ? null : downloadPdf,
-                icon: const Icon(Icons.picture_as_pdf),
-                label: const Text("Download PDF"),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: ElevatedButton.icon(
+                  onPressed: loading ? null : downloadPdf,
+                  icon: const Icon(Icons.picture_as_pdf, color: Colors.white),
+                  label: const Text("Download PDF Dashboard"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  ),
                 ),
               ),
             const SizedBox(height: 20),
@@ -135,12 +149,16 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
                 padding: const EdgeInsets.all(12),
                 margin: const EdgeInsets.only(top: 12),
                 decoration: BoxDecoration(
-                  color: status!.startsWith("✅") ? Colors.green[100] : Colors.red[100],
+                  color: status!.startsWith("✅")
+                      ? Colors.green[100]
+                      : status!.startsWith("⚠️")
+                          ? Colors.amber[100]
+                          : Colors.red[100],
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
                   status!,
-                  style: const TextStyle(fontSize: 16),
+                  style: const TextStyle(fontSize: 15),
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -150,21 +168,20 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
                   children: result!.entries.map((entry) {
                     final sheetName = entry.key;
                     final sheetData = entry.value as Map<String, dynamic>;
-                    final columns = List<String>.from(sheetData['columns'] ?? []);
-                    final formalSummary = sheetData['formal_summary'] ?? 'No summary available';
-                    Uint8List? chartBarImage;
-                    Uint8List? chartPieImage;
+                    final summary = sheetData['formal_summary'] ?? 'No summary available';
+                    Uint8List? chartBar, chartPie;
 
                     if (sheetData['chart_bar'] != null && (sheetData['chart_bar'] as String).isNotEmpty) {
                       try {
-                        chartBarImage = base64Decode(sheetData['chart_bar']);
+                        chartBar = base64Decode(sheetData['chart_bar']);
                       } catch (e) {
                         _logger.e('Error decoding bar chart for $sheetName: $e');
                       }
                     }
+
                     if (sheetData['chart_pie'] != null && (sheetData['chart_pie'] as String).isNotEmpty) {
                       try {
-                        chartPieImage = base64Decode(sheetData['chart_pie']);
+                        chartPie = base64Decode(sheetData['chart_pie']);
                       } catch (e) {
                         _logger.e('Error decoding pie chart for $sheetName: $e');
                       }
@@ -173,38 +190,30 @@ class _AnalysisTestPageState extends State<AnalysisTestPage> {
                     return Card(
                       margin: const EdgeInsets.symmetric(vertical: 8),
                       child: ExpansionTile(
-                        title: Text("📄 Sheet: $sheetName", style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text("Columns: ${columns.length}"),
+                        title: Text("📄 $sheetName", style: const TextStyle(fontWeight: FontWeight.bold)),
                         children: [
                           Padding(
-                            padding: const EdgeInsets.all(16),
+                            padding: const EdgeInsets.all(12),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('Formal Summary:', style: TextStyle(fontWeight: FontWeight.bold)),
-                                Text(formalSummary, style: const TextStyle(fontSize: 14)),
+                                const Text('Summary:', style: TextStyle(fontWeight: FontWeight.bold)),
+                                Text(summary),
                                 const SizedBox(height: 10),
-                                if (chartBarImage != null)
-                                  Container(
-                                    margin: const EdgeInsets.symmetric(vertical: 10),
-                                    height: 200,
-                                    width: double.infinity,
-                                    child: Image.memory(chartBarImage, fit: BoxFit.contain),
-                                  ),
-                                if (chartPieImage != null)
-                                  Container(
-                                    margin: const EdgeInsets.symmetric(vertical: 10),
-                                    height: 200,
-                                    width: double.infinity,
-                                    child: Image.memory(chartPieImage, fit: BoxFit.contain),
-                                  ),
-                                const Text('Sample Data:', style: TextStyle(fontWeight: FontWeight.bold)),
-                                ...List<Map<String, dynamic>>.from(sheetData['rows'] ?? []).take(5).map((row) {
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 4),
-                                    child: Text(row.toString(), style: const TextStyle(fontSize: 12)),
-                                  );
-                                }),
+                                if (chartBar != null)
+                                  Image.memory(chartBar, height: 180, fit: BoxFit.contain),
+                                if (chartPie != null)
+                                  Image.memory(chartPie, height: 180, fit: BoxFit.contain),
+                                const SizedBox(height: 10),
+                                const Text('Sample Data (first 5 rows):',
+                                    style: TextStyle(fontWeight: FontWeight.bold)),
+                                ...List<Map<String, dynamic>>.from(sheetData['rows'] ?? [])
+                                    .take(5)
+                                    .map((row) => Padding(
+                                          padding: const EdgeInsets.symmetric(vertical: 2),
+                                          child: Text(row.toString(),
+                                              style: const TextStyle(fontSize: 12)),
+                                        )),
                               ],
                             ),
                           ),

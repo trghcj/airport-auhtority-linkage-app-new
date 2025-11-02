@@ -1,9 +1,14 @@
-import 'package:airport_auhtority_linkage_app/models/analysis_data.dart' as model;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
+import 'package:logger/logger.dart';
+
+// ✅ Import your own project files
 import 'firebase_options.dart';
+import 'package:airport_auhtority_linkage_app/config/config.dart';
+import 'package:airport_auhtority_linkage_app/models/analysis_data.dart' as model;
 import 'pages/login_page.dart';
 import 'pages/dashboard_page.dart';
 import 'pages/search_page.dart';
@@ -13,16 +18,26 @@ import 'pages/analysis_page.dart';
 import 'providers/auth_provider.dart' as my_auth;
 import 'providers/stats_provider.dart';
 import 'providers/search_provider.dart';
-import 'package:logger/logger.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final logger = Logger();
+
+  // 🌍 Ensure web uses production backend (Railway)
+  // and local builds use localhost in debug mode
+  if (kIsWeb) {
+    AppConfig.setEnvironment(isDev: false);
+  } else {
+    AppConfig.setEnvironment(isDev: kDebugMode);
+  }
+
+  AppConfig.logActiveConfig(); // 🧾 Print current environment + base URL
+
   try {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
     runApp(const MyApp());
   } catch (e, stackTrace) {
-    final logger = Logger();
-    logger.e('Failed to initialize Firebase: $e\nStackTrace: $stackTrace');
+    logger.e('❌ Firebase initialization failed: $e\nStackTrace: $stackTrace');
     runApp(const ErrorApp());
   }
 }
@@ -33,6 +48,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logger = Logger();
+
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<my_auth.AuthProvider>(
@@ -58,7 +74,11 @@ class MyApp extends StatelessWidget {
           fontFamily: 'Roboto',
           textTheme: Theme.of(context).textTheme.apply(
                 fontFamily: 'Roboto',
-                fontFamilyFallback: ['NotoSans', 'NotoSansSymbols', 'NotoSansKR'], // Extended fallback for character coverage
+                fontFamilyFallback: [
+                  'NotoSans',
+                  'NotoSansSymbols',
+                  'NotoSansKR',
+                ],
               ),
           appBarTheme: const AppBarTheme(
             backgroundColor: Color(0xFF1976D2),
@@ -75,8 +95,9 @@ class MyApp extends StatelessWidget {
           '/upload': (context) => const UploadPage(),
           '/analysis': (context) {
             final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
-            final analysisResult = args?['analysisResult'] as Map<String, model.AnalysisData>?;
-            logger.d('Navigating to AnalysisPage with analysisResult: $analysisResult');
+            final analysisResult =
+                args?['analysisResult'] as Map<String, model.AnalysisData>?;
+            logger.d('➡ Navigating to AnalysisPage with: $analysisResult');
             return AnalysisPage(initialAnalysisResult: analysisResult);
           },
           '/search': (context) {
@@ -84,35 +105,35 @@ class MyApp extends StatelessWidget {
             final docId = args?['docId'] as String?;
             final filterBy = args?['filterBy'] as String? ?? '';
             if (docId == null || docId.isEmpty) {
-              logger.w('Invalid or missing docId for SearchPage, using default');
+              logger.w('⚠ Missing docId for SearchPage, using default');
               return const SearchPage(filterBy: '', docId: 'default_doc_id');
             }
-            logger.d('Navigating to SearchPage with docId: $docId, filterBy: $filterBy');
+            logger.d('➡ Navigating to SearchPage with docId: $docId');
             return SearchPage(filterBy: filterBy, docId: docId);
           },
           '/stats': (context) {
             final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
             final docId = args?['docId'] as String?;
             if (docId == null || docId.isEmpty) {
-              logger.w('Invalid or missing docId for StatsPage, using default');
+              logger.w('⚠ Missing docId for StatsPage, using default');
               return const StatsPage(docId: 'default_doc_id');
             }
-            logger.d('Navigating to StatsPage with docId: $docId');
+            logger.d('➡ Navigating to StatsPage with docId: $docId');
             return StatsPage(docId: docId);
           },
         },
         onGenerateRoute: (settings) {
-          logger.w('Generating route for unknown path: ${settings.name}');
+          logger.w('⚠ Unknown route: ${settings.name}');
           return MaterialPageRoute(
-            builder: (context) => const Scaffold(
+            builder: (_) => const Scaffold(
               body: Center(child: Text('Route not found')),
             ),
           );
         },
         onUnknownRoute: (settings) {
-          logger.w('Unknown route requested: ${settings.name}');
+          logger.w('⚠ Unknown route requested: ${settings.name}');
           return MaterialPageRoute(
-            builder: (context) => const Scaffold(
+            builder: (_) => const Scaffold(
               body: Center(child: Text('Route not found')),
             ),
           );
@@ -128,21 +149,24 @@ class AuthWrapper extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logger = Logger();
+
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          logger.d('Auth state waiting at ${DateTime.now().toIso8601String()}');
+          logger.d('⌛ Waiting for Firebase Auth...');
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         } else if (snapshot.hasError) {
-          logger.e('Auth state error: ${snapshot.error} at ${DateTime.now().toIso8601String()}');
-          return const Scaffold(body: Center(child: Text('Authentication error, please try again later')));
+          logger.e('❌ Auth stream error: ${snapshot.error}');
+          return const Scaffold(
+            body: Center(child: Text('Authentication error. Please try again.')),
+          );
         } else if (snapshot.hasData) {
           final user = snapshot.data;
-          logger.d('User authenticated: ${user?.uid} at ${DateTime.now().toIso8601String()}');
+          logger.i('✅ User authenticated: ${user?.uid}');
           return const DashboardPage();
         } else {
-          logger.d('No user authenticated at ${DateTime.now().toIso8601String()}');
+          logger.w('👤 No user authenticated');
           return const LoginPage();
         }
       },
@@ -156,7 +180,8 @@ class ErrorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logger = Logger();
-    logger.e('App starting with Firebase initialization failure');
+    logger.e('🚨 Firebase initialization failed. Showing ErrorApp.');
+
     return MaterialApp(
       home: Scaffold(
         body: Center(

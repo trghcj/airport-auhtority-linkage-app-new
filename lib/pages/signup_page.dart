@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:airport_auhtority_linkage_app/pages/login_page.dart';
 import 'package:airport_auhtority_linkage_app/providers/auth_provider.dart';
 import 'package:logger/logger.dart'; // Ensure this is imported
+import '../api_service.dart';
 
 class SignupPage extends StatefulWidget {
   const SignupPage({super.key});

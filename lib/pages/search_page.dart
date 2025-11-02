@@ -1,18 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:airport_auhtority_linkage_app/providers/search_provider.dart';
-import 'package:flutter/material.dart';
 import 'package:airport_auhtority_linkage_app/services/analysis_service.dart';
+import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
-import 'package:intl/intl.dart'; // For IST formatting
-
-// Fallback Config if not defined elsewhere
-class Config {
-  static const String apiBaseUrl = 'http://localhost:5003'; // Adjust as needed
-}
-
-// Static current date and time (04:03 AM IST, October 27, 2025)
-final DateTime _currentDate = DateTime(2025, 10, 27, 4, 3, 0, 0, 19800);
+import 'package:intl/intl.dart';
+import 'package:airport_auhtority_linkage_app/config/config.dart';
 
 class SearchPage extends StatefulWidget {
   final String filterBy;
@@ -27,32 +18,32 @@ class SearchPage extends StatefulWidget {
 class _SearchPageState extends State<SearchPage> {
   final Logger _logger = Logger();
   final AnalysisService _analysisService = AnalysisService();
+
   final _regNoController = TextEditingController();
   final _uniqueIdController = TextEditingController();
   final _aircraftTypeController = TextEditingController();
+
   String? _linkageStatus;
   String? _arrBillStatus;
   String? _depBillStatus;
   String? _udfBillStatus;
+
   List<Map<String, dynamic>> _results = [];
   bool _isLoading = false;
   String? _error;
   Timer? _debounceTimer;
   int _page = 0;
-  static const int _limit = 100; // Target at least 100 entries
+  static const int _limit = 100; // Fetch up to 100 entries per page
 
   @override
   void initState() {
     super.initState();
-    _regNoController.text = widget.filterBy.trim(); // Preserve case for display
-    _logger.d('Initializing SearchPage with docId: ${widget.docId} at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-    if (widget.docId != null) {
-      _fetchResults();
-    } else {
-      setState(() {
-        _error = 'No document ID available. Please upload or analyze a file first.';
-      });
-    }
+    _regNoController.text = widget.filterBy.trim();
+    _logger.i(
+      'SearchPage initialized with docId: ${widget.docId}, filterBy: "${widget.filterBy}" '
+      'at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(DateTime.now())}',
+    );
+    if (widget.docId != null) _fetchResults();
   }
 
   @override
@@ -65,14 +56,22 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<void> _fetchResults() async {
-    if (widget.docId == null) {
-      setState(() {
-        _error = 'No document ID available. Please upload or analyze a file first.';
-        _isLoading = false;
-      });
-      _showSnackBar('No document ID available. Please upload or analyze a file first.');
+    if (widget.docId == null || widget.docId!.isEmpty) {
+      _setError('⚠️ No document ID available. Please upload or analyze a file first.');
       return;
     }
+
+    final query = [
+      _regNoController.text.trim(),
+      _uniqueIdController.text.trim(),
+      _aircraftTypeController.text.trim(),
+      _linkageStatus,
+      _arrBillStatus,
+      _depBillStatus,
+      _udfBillStatus,
+    ].where((s) => s?.isNotEmpty ?? false).join(' ');
+
+    _logger.d('Fetching search results | docId=${widget.docId}, query="$query", page=$_page, limit=$_limit');
 
     setState(() {
       _isLoading = true;
@@ -80,18 +79,6 @@ class _SearchPageState extends State<SearchPage> {
     });
 
     try {
-      final query = [
-        _regNoController.text.trim(),
-        _uniqueIdController.text.trim(),
-        _aircraftTypeController.text.trim(),
-        _linkageStatus,
-        _arrBillStatus,
-        _depBillStatus,
-        _udfBillStatus,
-      ].where((s) => s?.isNotEmpty ?? false).join(' ');
-
-      _logger.d('Fetching search results with query: "$query", docId: ${widget.docId}, page: $_page, limit: $_limit at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-
       final results = await _analysisService.searchFlights(widget.docId!, {
         'query': query,
         'page': _page.toString(),
@@ -101,51 +88,38 @@ class _SearchPageState extends State<SearchPage> {
       if (!mounted) return;
 
       if (results.isEmpty) {
-        _logger.w('No search results returned from backend for query: "$query" at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-        setState(() {
-          _results = [];
-          _error = 'No matching flights found.';
-          _isLoading = false;
-        });
+        _setError('No matching flights found for your search.');
         return;
       }
 
       setState(() {
-        // Process search results with enhanced logging for debugging
-        _results = results.map((result) {
-          _logger.d('Raw search result: $result at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
-          final regNo = result['Reg No']?.toString() ?? 'Unknown';
-          if (regNo == 'Unknown') {
-            _logger.w('Fallback to Unknown for Reg No in result: $result');
-          }
+        _results = results.map((r) {
           return {
-            'Reg No': regNo,
-            'Date': result['Date']?.toString() ?? 'Unknown',
-            'Unique Id': result['Unique Id']?.toString() ?? 'Unknown',
-            'Operator Name': result['Operator Name']?.toString() ?? 'Unknown Operator',
-            'Aircraft Type': result['Aircraft Type']?.toString() ?? 'Unknown',
-            'Airtime Hours': result['Airtime Hours']?.toString() ?? '0.00',
-            'Linkage Status': result['Linkage Status']?.toString() ?? 'Unknown',
-            'Arr Bill Status': result['Arr Bill Status']?.toString() ?? 'unbilled',
-            'Dep Bill Status': result['Dep Bill Status']?.toString() ?? 'unbilled',
-            'UDF Bill Status': result['UDF Bill Status']?.toString() ?? 'unbilled',
-            'Landing': result['Landing']?.toString() ?? '₹0.00',
-            'UDF Charge': result['UDF Charge']?.toString() ?? '₹0.00',
+            'Reg No': r['Reg No'] ?? 'Unknown',
+            'Date': r['Date'] ?? 'Unknown',
+            'Unique Id': r['Unique Id'] ?? 'Unknown',
+            'Operator Name': r['Operator Name'] ?? 'Unknown Operator',
+            'Aircraft Type': r['Aircraft Type'] ?? 'Unknown',
+            'Airtime Hours': r['Airtime Hours'] ?? '0.00',
+            'Linkage Status': r['Linkage Status'] ?? 'Unknown',
+            'Arr Bill Status': r['Arr Bill Status'] ?? 'unbilled',
+            'Dep Bill Status': r['Dep Bill Status'] ?? 'unbilled',
+            'UDF Bill Status': r['UDF Bill Status'] ?? 'unbilled',
+            'Landing': r['Landing'] ?? '₹0.00',
+            'UDF Charge': r['UDF Charge'] ?? '₹0.00',
           };
         }).toList();
-
         _isLoading = false;
-        _logger.d('Fetched ${_results.length} search results at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}');
       });
-    } catch (e, stackTrace) {
-      if (mounted) {
-        _logger.e('Search error at ${DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(_currentDate)}: $e\nStackTrace: $stackTrace');
-        setState(() {
-          _error = 'Error fetching results: ${e.toString().contains("Network error") ? "Check your internet connection and try again." : e.toString()}';
-          _isLoading = false;
-        });
-        _showSnackBar('Error fetching results: ${e.toString().contains("Network error") ? "Check your internet connection." : e.toString()}');
-      }
+
+      _logger.i('Fetched ${_results.length} results for "$query" at page $_page');
+    } catch (e, stack) {
+      _logger.e('Search error: $e\n$stack');
+      _setError(
+        e.toString().contains("Network")
+            ? 'Network issue. Please check your internet connection.'
+            : 'Unexpected error: $e',
+      );
     }
   }
 
@@ -156,212 +130,108 @@ class _SearchPageState extends State<SearchPage> {
     });
   }
 
-  void _clearTextField(TextEditingController controller) {
-    controller.clear();
-    _debounceSearch();
-  }
-
-  void _resetDropdown(void Function(String?) setter) {
-    setter(null);
-    _debounceSearch();
+  void _setError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _error = message;
+      _isLoading = false;
+      _results = [];
+    });
+    _showSnackBar(message);
   }
 
   void _showSnackBar(String message) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          duration: const Duration(seconds: 2),
-        ),
+        SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
       );
     }
   }
 
   Color _getAirtimeColor(String airtimeHoursStr) {
     final airtimeHours = double.tryParse(airtimeHoursStr) ?? 0.0;
-    return airtimeHours >= 14 ? Colors.green : airtimeHours >= 10 ? Colors.yellow : Colors.red;
+    if (airtimeHours >= 14) return Colors.green;
+    if (airtimeHours >= 10) return Colors.orange;
+    return Colors.red;
   }
+
+  void _resetFilters() {
+    _regNoController.clear();
+    _uniqueIdController.clear();
+    _aircraftTypeController.clear();
+    _linkageStatus = null;
+    _arrBillStatus = null;
+    _depBillStatus = null;
+    _udfBillStatus = null;
+    _page = 0;
+    _debounceSearch();
+  }
+
+  // ------------------------------ UI ------------------------------
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Search Flights',
-          style: TextStyle(
-            fontFamily: 'Roboto',
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        elevation: 4,
-        shadowColor: Colors.grey.withOpacity(0.3),
+        title: const Text('Search Flights'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _regNoController.clear();
-              _uniqueIdController.clear();
-              _aircraftTypeController.clear();
-              _linkageStatus = null;
-              _arrBillStatus = null;
-              _depBillStatus = null;
-              _udfBillStatus = null;
-              _page = 0;
-              _debounceSearch();
-            },
-          ),
+          IconButton(onPressed: _resetFilters, icon: const Icon(Icons.refresh)),
         ],
       ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildTextField(
-                controller: _regNoController,
-                label: 'Registration No.',
-                onClear: () => _clearTextField(_regNoController),
-              ),
-              const SizedBox(height: 8),
-              _buildTextField(
-                controller: _uniqueIdController,
-                label: 'Unique ID',
-                onClear: () => _clearTextField(_uniqueIdController),
-              ),
-              const SizedBox(height: 8),
-              _buildTextField(
-                controller: _aircraftTypeController,
-                label: 'Aircraft Type',
-                onClear: () => _clearTextField(_aircraftTypeController),
-              ),
+              _buildTextField(_regNoController, 'Registration No.'),
+              _buildTextField(_uniqueIdController, 'Unique ID'),
+              _buildTextField(_aircraftTypeController, 'Aircraft Type'),
               const SizedBox(height: 8),
               _buildDropdown(
+                label: 'Linkage Status',
                 value: _linkageStatus,
-                hint: 'Linkage Status',
                 items: ['Same', 'Different'],
-                onChanged: (value) {
-                  setState(() => _linkageStatus = value);
-                  _debounceSearch();
-                },
-                onReset: () => _resetDropdown((v) => _linkageStatus = v),
+                onChanged: (v) => setState(() => _linkageStatus = v),
               ),
-              const SizedBox(height: 8),
               _buildDropdown(
+                label: 'Arrival Bill Status',
                 value: _arrBillStatus,
-                hint: 'Arrival Bill Status',
                 items: ['Billed', 'Unbilled'],
-                onChanged: (value) {
-                  setState(() => _arrBillStatus = value);
-                  _debounceSearch();
-                },
-                onReset: () => _resetDropdown((v) => _arrBillStatus = v),
+                onChanged: (v) => setState(() => _arrBillStatus = v),
               ),
-              const SizedBox(height: 8),
               _buildDropdown(
+                label: 'Departure Bill Status',
                 value: _depBillStatus,
-                hint: 'Departure Bill Status',
                 items: ['Billed', 'Unbilled'],
-                onChanged: (value) {
-                  setState(() => _depBillStatus = value);
-                  _debounceSearch();
-                },
-                onReset: () => _resetDropdown((v) => _depBillStatus = v),
+                onChanged: (v) => setState(() => _depBillStatus = v),
               ),
-              const SizedBox(height: 8),
               _buildDropdown(
+                label: 'UDF Bill Status',
                 value: _udfBillStatus,
-                hint: 'UDF Bill Status',
                 items: ['Billed', 'Unbilled'],
-                onChanged: (value) {
-                  setState(() => _udfBillStatus = value);
-                  _debounceSearch();
-                },
-                onReset: () => _resetDropdown((v) => _udfBillStatus = v),
+                onChanged: (v) => setState(() => _udfBillStatus = v),
               ),
-              const SizedBox(height: 16),
-              ElevatedButton(
+              const SizedBox(height: 10),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.search),
                 onPressed: _isLoading ? null : _debounceSearch,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: Size(MediaQuery.of(context).size.width - 32, 50),
-                ),
-                child: const Text(
-                  'Search',
-                  style: TextStyle(
-                    fontFamily: 'Roboto',
-                    fontSize: 16,
-                  ),
-                ),
+                label: const Text("Search Flights"),
+                style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
               ),
               if (_isLoading)
                 const Padding(
-                  padding: EdgeInsets.only(top: 8.0),
+                  padding: EdgeInsets.all(10),
                   child: Center(child: CircularProgressIndicator()),
                 ),
               if (_error != null)
                 Padding(
-                  padding: const EdgeInsets.only(top: 8.0),
-                  child: Text(
-                    _error!,
-                    style: const TextStyle(
-                      fontFamily: 'Roboto',
-                      color: Colors.red,
-                      fontSize: 16,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text(_error!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.red, fontSize: 16)),
                 ),
-              if (_results.isNotEmpty)
-                Container(
-                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
-                  child: SingleChildScrollView(
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: _results.length,
-                      itemBuilder: (context, index) {
-                        final item = _results[index];
-                        final double airtimeHours = double.tryParse(item['Airtime Hours']) ?? 0.0; // Handle null or invalid
-                        final airtimeColor = _getAirtimeColor(airtimeHours.toString());
-                        return Card(
-                          elevation: 2,
-                          margin: const EdgeInsets.symmetric(vertical: 8.0),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.all(16.0),
-                            title: Text(
-                              '${item['Reg No'] ?? 'Unknown'} - ${item['Count'] ?? '1'} Flights',
-                              style: const TextStyle(
-                                fontFamily: 'Roboto',
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                              ),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _buildDetailRow('Reg No', item['Reg No'] ?? 'Unknown'),
-                                _buildDetailRow('Date', item['Date'] ?? 'Unknown'),
-                                _buildDetailRow('Count', item['Count'] ?? '1'),
-                                _buildDetailRow('Unique Id', item['Unique Id'] ?? 'Unknown'),
-                                _buildDetailRow('Operator Name', item['Operator Name'] ?? 'Unknown Operator'),
-                                _buildDetailRow('Aircraft Type', item['Aircraft Type'] ?? 'Unknown'),
-                                _buildDetailRow('Airtime', item['Airtime Hours'] ?? '0.00', color: airtimeColor),
-                                _buildDetailRow('Linkage', item['Linkage Status'] ?? 'Unknown'),
-                                _buildDetailRow('Arr Bill', item['Arr Bill Status'] ?? 'unbilled'),
-                                _buildDetailRow('Dep Bill', item['Dep Bill Status'] ?? 'unbilled'),
-                                _buildDetailRow('UDF Bill', item['UDF Bill Status'] ?? 'unbilled'),
-                                _buildDetailRow('Landing', item['Landing'] ?? '₹0.00'),
-                                _buildDetailRow('UDF Charge', item['UDF Charge'] ?? '₹0.00'),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
+              if (_results.isNotEmpty) _buildResultsList(),
             ],
           ),
         ),
@@ -369,93 +239,95 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String label,
-    required VoidCallback onClear,
-  }) {
-    return Row(
-      children: [
-        Expanded(
-          child: TextField(
-            controller: controller,
-            decoration: InputDecoration(
-              labelText: label,
-              labelStyle: const TextStyle(fontFamily: 'Roboto', fontSize: 14),
-            ),
-            onChanged: (_) => _debounceSearch(),
-            style: const TextStyle(fontFamily: 'Roboto', fontSize: 14),
+  Widget _buildTextField(TextEditingController controller, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: TextField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: label,
+          suffixIcon: IconButton(
+            icon: const Icon(Icons.clear),
+            onPressed: () {
+              controller.clear();
+              _debounceSearch();
+            },
           ),
+          border: const OutlineInputBorder(),
         ),
-        IconButton(
-          icon: const Icon(Icons.clear),
-          onPressed: onClear,
-        ),
-      ],
+        onChanged: (_) => _debounceSearch(),
+      ),
     );
   }
 
   Widget _buildDropdown({
+    required String label,
     String? value,
-    required String hint,
     required List<String> items,
     required ValueChanged<String?> onChanged,
-    required VoidCallback onReset,
   }) {
-    return Row(
-      children: [
-        Expanded(
-          child: DropdownButtonFormField<String>(
-            value: value,
-            hint: Text(
-              hint,
-              style: const TextStyle(fontFamily: 'Roboto', fontSize: 14),
-            ),
-            items: items.map((s) => DropdownMenuItem(
-                  value: s,
-                  child: Text(
-                    s,
-                    style: const TextStyle(fontFamily: 'Roboto', fontSize: 14),
-                  ),
-                )).toList(),
-            onChanged: onChanged,
-            decoration: const InputDecoration(
-              labelStyle: TextStyle(fontFamily: 'Roboto', fontSize: 14),
-            ),
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.clear),
-          onPressed: onReset,
-        ),
-      ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: DropdownButtonFormField<String>(
+        value: value,
+        isExpanded: true,
+        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        items: items.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+        onChanged: (v) {
+          onChanged(v);
+          _debounceSearch();
+        },
+      ),
     );
   }
 
-  Widget _buildDetailRow(String label, String value, {Color? color}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            '$label:',
-            style: const TextStyle(
-              fontFamily: 'Roboto',
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
+  Widget _buildResultsList() {
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      child: ListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: _results.length,
+        itemBuilder: (context, index) {
+          final item = _results[index];
+          final airtimeColor = _getAirtimeColor(item['Airtime Hours']);
+          return Card(
+            elevation: 2,
+            margin: const EdgeInsets.symmetric(vertical: 6),
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text("${item['Reg No']} (${item['Unique Id']})",
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 4),
+                  _buildDetail("Operator", item['Operator Name']),
+                  _buildDetail("Aircraft", item['Aircraft Type']),
+                  _buildDetail("Date", item['Date']),
+                  _buildDetail("Airtime", item['Airtime Hours'], color: airtimeColor),
+                  _buildDetail("Linkage", item['Linkage Status']),
+                  _buildDetail("Arr Bill", item['Arr Bill Status']),
+                  _buildDetail("Dep Bill", item['Dep Bill Status']),
+                  _buildDetail("UDF Bill", item['UDF Bill Status']),
+                  _buildDetail("Landing", item['Landing']),
+                  _buildDetail("UDF Charge", item['UDF Charge']),
+                ],
+              ),
             ),
-          ),
-          Text(
-            value,
-            style: TextStyle(
-              fontFamily: 'Roboto',
-              fontSize: 14,
-              color: color ?? Colors.black,
-            ),
-          ),
-        ],
+          );
+        },
       ),
+    );
+  }
+
+  Widget _buildDetail(String label, String value, {Color? color}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500)),
+        Text(value, style: TextStyle(color: color ?? Colors.black)),
+      ],
     );
   }
 }

@@ -36,6 +36,20 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+@app.route("/", methods=["GET"])
+def home():
+    return {
+        "status": "ok",
+        "message": "Flask backend is running successfully on Railway 🚀",
+        "endpoints": [
+            "/upload",
+            "/analyze",
+            "/download_dashboard_pdf",
+            "/search",
+            "/stats"
+        ]
+    }
+
 # Set current date and time dynamically
 current_date = datetime.now(pytz.timezone('Asia/Kolkata')).replace(hour=3, minute=28, second=0, microsecond=0)  # 03:28 AM IST, October 27, 2025
 
@@ -50,21 +64,30 @@ logger.info(f"Matplotlib backend set to: {matplotlib.get_backend()} at {current_
 
 def initialize_firestore():
     try:
-        cred_path = os.getenv('FIREBASE_CRED_PATH', r"C:\Users\suremdra singh\Desktop\Flutter project\airport-authority-linkage-app\lib\flask-backend\airport-authority-linkage-firebase-adminsdk-fbsvc-d146646df7.json")
-        if not os.path.exists(cred_path):
-            logger.error(f"Firebase credential file not found at: {cred_path} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-            raise FileNotFoundError(f"Credential file missing at {cred_path}")
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred, {'projectId': 'airport-authority-linkage'})
+        # ✅ Load Firebase credentials from environment variable instead of file
+        firebase_creds_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+        if not firebase_creds_json:
+            logger.error("Firebase credentials not found in environment variables.")
+            raise ValueError("Missing environment variable: GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+        # Parse the JSON credentials
+        cred_data = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_data)
+
+        # Initialize Firebase app
+        try:
+            firebase_admin.get_app()
+            logger.info("Firebase app already initialized.")
+        except ValueError:
+            firebase_admin.initialize_app(cred, {'projectId': 'airport-authority-linkage'})
+
         db = firestore.client()
-        logger.info(f"Firestore initialized successfully at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+        logger.info("✅ Firestore initialized successfully using environment variable credentials.")
         return db
-    except ValueError as ve:
-        logger.warning(f"Firebase app already initialized: {ve} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
-        db = firestore.client()
-        return db
+
     except Exception as e:
-        logger.error(f"Failed to initialize Firestore: {e}\n{traceback.format_exc()} at {current_date.strftime('%Y-%m-%d %H:%M:%S IST')}")
+        logger.error(f"❌ Failed to initialize Firestore: {e}\n{traceback.format_exc()}")
         raise
 
 db = initialize_firestore()
@@ -1088,4 +1111,6 @@ def download_dashboard_pdf():
         return response
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5003)
+    import os
+    port = int(os.environ.get("PORT", 5003))  # Railway dynamically assigns PORT
+    app.run(host='0.0.0.0', port=port, debug=False)

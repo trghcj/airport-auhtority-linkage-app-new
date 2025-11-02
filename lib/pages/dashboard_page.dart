@@ -8,6 +8,7 @@ import 'stats_page.dart';
 import 'search_page.dart';
 import 'upload_page.dart';
 import 'analysis_page.dart';
+import '../api_service.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});

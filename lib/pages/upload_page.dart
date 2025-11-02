@@ -9,9 +9,10 @@ import 'package:logger/logger.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
+import 'package:airport_auhtority_linkage_app/config/config.dart';
 import 'package:airport_auhtority_linkage_app/services/analysis_service.dart';
 
-// Web only
+// Web-only imports
 import 'package:universal_html/html.dart' as html;
 
 class UploadPage extends StatefulWidget {
@@ -25,6 +26,7 @@ class _UploadPageState extends State<UploadPage> {
   final Logger _log = Logger();
   final AnalysisService _analysisService = AnalysisService();
   final Dio _dio = Dio();
+
   String? _docId;
   String _status = 'Waiting for file...';
   bool _uploading = false;
@@ -33,9 +35,7 @@ class _UploadPageState extends State<UploadPage> {
   bool _hasDeparture = false;
   bool _hasBase = false;
 
-  // -----------------------------------------------------------------
-  // 1. Pick files
-  // -----------------------------------------------------------------
+  // Pick files
   Future<void> _pick() async {
     try {
       final res = await FilePicker.platform.pickFiles(
@@ -66,9 +66,7 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // -----------------------------------------------------------------
-  // 2. Upload departure files
-  // -----------------------------------------------------------------
+  // Upload departure files
   Future<void> _uploadDeparture() async {
     if (_files == null || !_hasDeparture) {
       setState(() {
@@ -108,15 +106,14 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // -----------------------------------------------------------------
-  // 3. Analyze base file (optional)
-  // -----------------------------------------------------------------
+  // Analyze base file
   Future<void> _analyzeBase() async {
     if (_files == null || !_hasBase) {
       setState(() => _error = 'Select a base file');
       _showSnackBar(_error!);
       return;
     }
+
     final base = _files!.firstWhere((f) => f.name.toLowerCase().contains('base'), orElse: () => throw Exception('No base file found'));
     setState(() => _uploading = true);
 
@@ -126,13 +123,14 @@ class _UploadPageState extends State<UploadPage> {
             ? MultipartFile.fromBytes(base.bytes!, filename: base.name)
             : await MultipartFile.fromFile(base.path!, filename: base.name),
       });
-      const url = 'https://YOUR_NGROK_URL.ngrok-free.app'; // Placeholder, update with AppConfig.analyzeURL if integrated
+
       final resp = await _dio.post(
-        '$url/analyze',
+        AppConfig.analyzeURL,
         data: form,
         options: Options(headers: {'Content-Type': 'multipart/form-data'}),
       );
       final data = resp.data;
+
       if (data['success'] == true) {
         Navigator.pushNamed(context, '/dashboard', arguments: data);
       } else {
@@ -148,19 +146,17 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // -----------------------------------------------------------------
-  // 4. Download PDF
-  // -----------------------------------------------------------------
+  // Download PDF
   Future<void> _downloadPdf() async {
     if (_docId == null) {
       _showSnackBar('No Doc ID available');
       return;
     }
+
     setState(() => _uploading = true);
     try {
-      const url = 'https://766f2f960db6.ngrok-free.app'; // Placeholder, update with AppConfig.generatePdfURL if integrated
       final resp = await _dio.get(
-        '$url/download_dashboard_pdf?doc_id=$_docId',
+        '${AppConfig.downloadPdfUrl}?doc_id=$_docId',
         options: Options(responseType: ResponseType.bytes),
       );
       final bytes = resp.data as List<int>;
@@ -178,6 +174,7 @@ class _UploadPageState extends State<UploadPage> {
         await file.writeAsBytes(bytes);
         await OpenFile.open(file.path);
       }
+
       setState(() => _status = 'PDF downloaded');
       _showSnackBar('PDF downloaded successfully');
     } catch (e) {
@@ -188,12 +185,10 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  // -----------------------------------------------------------------
   // Helpers
-  // -----------------------------------------------------------------
   String _ist() {
     final utc = DateTime.now().toUtc();
-    final ist = utc.add(const Duration(hours: 5, minutes: 30)); // 11:14 PM IST, October 26, 2025
+    final ist = utc.add(const Duration(hours: 5, minutes: 30));
     return DateFormat("yyyy-MM-dd HH:mm:ss 'IST'").format(ist);
   }
 
@@ -237,9 +232,7 @@ class _UploadPageState extends State<UploadPage> {
     );
   }
 
-  // -----------------------------------------------------------------
   // UI
-  // -----------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
