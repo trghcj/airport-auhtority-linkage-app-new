@@ -60,7 +60,7 @@ flutter:
   # Assets configuration
   assets:
     - assets/images/airplane.webp
-    - assets/credentials.json
+    #- assets/credentials.json
 
   # Fonts configuration
   fonts:
